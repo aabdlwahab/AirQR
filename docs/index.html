@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0b0d0c">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="AirQR">
+    <title>AirQR Scanner</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="apple-touch-icon" href="icons/icon-180.png">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">AirQR</p>
+          <h1>Scanner</h1>
+        </div>
+        <div class="status-pill" id="supportStatus">Checking scanner</div>
+      </header>
+
+      <section class="scanner-grid">
+        <div class="camera-panel">
+          <div class="video-wrap">
+            <video id="video" playsinline muted></video>
+            <div class="scan-frame" aria-hidden="true"></div>
+            <canvas id="canvas" hidden></canvas>
+          </div>
+          <div class="controls">
+            <button id="startButton" type="button">Start Camera</button>
+            <button id="stopButton" type="button" disabled>Stop</button>
+            <button id="resetButton" type="button">Reset</button>
+            <select id="cameraSelect" aria-label="Camera"></select>
+          </div>
+        </div>
+
+        <aside class="transfer-panel">
+          <div class="metric-row">
+            <span>Frames</span>
+            <strong id="frameCount">0 / 0</strong>
+          </div>
+          <div class="progress" aria-hidden="true">
+            <div id="progressBar"></div>
+          </div>
+          <div id="frameDots" class="frame-dots" aria-hidden="true"></div>
+
+          <dl class="details">
+            <div>
+              <dt>Session</dt>
+              <dd id="sessionValue">-</dd>
+            </div>
+            <div>
+              <dt>Mode</dt>
+              <dd id="modeValue">-</dd>
+            </div>
+            <div>
+              <dt>Decode rate</dt>
+              <dd id="rateValue">-</dd>
+            </div>
+            <div>
+              <dt>Status</dt>
+              <dd id="statusText">Idle</dd>
+            </div>
+            <div>
+              <dt>Last</dt>
+              <dd id="lastFrameValue">-</dd>
+            </div>
+            <div>
+              <dt>Missing</dt>
+              <dd id="missingValue">-</dd>
+            </div>
+          </dl>
+
+          <label class="result-label" for="resultText">Result</label>
+          <textarea id="resultText" spellcheck="false" readonly></textarea>
+          <div class="result-actions">
+            <button id="copyButton" type="button" disabled>Copy</button>
+            <button id="saveButton" type="button" disabled>Save .txt</button>
+          </div>
+        </aside>
+      </section>
+
+      <section class="phone-panel">
+        <div>
+          <label for="accessUrl">Phone URL</label>
+          <input id="accessUrl" type="text" readonly>
+        </div>
+        <button id="copyUrlButton" type="button">Copy URL</button>
+        <p id="networkHint">Localhost is ready for desktop testing.</p>
+      </section>
+
+      <section class="manual-panel">
+        <label for="manualFrames">Manual frames</label>
+        <div class="manual-row">
+          <textarea id="manualFrames" spellcheck="false" placeholder="AIRQR1|..."></textarea>
+          <button id="addManualButton" type="button">Add</button>
+        </div>
+      </section>
+    </main>
+
+    <script src="vendor/jsqr/jsQR.js"></script>
+    <script src="vendor/pako/pako_inflate.min.js"></script>
+    <script src="app.js" defer></script>
+  </body>
+</html>
