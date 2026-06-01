@@ -2,104 +2,173 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#0b0d0c">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0a0c0b">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="AirQR">
     <title>AirQR Scanner</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap">
     <link rel="stylesheet" href="styles.css">
     <link rel="manifest" href="manifest.webmanifest">
     <link rel="apple-touch-icon" href="icons/icon-180.png">
   </head>
   <body>
-    <main class="shell">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">AirQR</p>
-          <h1>Scanner</h1>
+    <main id="app" class="signal" data-phase="idle">
+      <!-- Camera viewport: full-bleed live feed with scanning reticle -->
+      <div class="viewport">
+        <video id="video" playsinline muted></video>
+        <canvas id="canvas" hidden></canvas>
+        <div class="reticle" aria-hidden="true">
+          <span class="tl"></span>
+          <span class="tr"></span>
+          <span class="bl"></span>
+          <span class="br"></span>
         </div>
-        <div class="status-pill" id="supportStatus">Checking scanner</div>
+        <div class="scan-sheen" aria-hidden="true"></div>
+        <div class="vp-fade vp-fade--top" aria-hidden="true"></div>
+        <div class="vp-fade vp-fade--bottom" aria-hidden="true"></div>
+        <p class="aim-hint">Aim at the AirQR loop to begin</p>
+      </div>
+
+      <!-- Header overlaid on the camera -->
+      <header class="hud-header">
+        <div class="brand">
+          <div class="wordmark">AIRQR</div>
+          <div class="session">session <span id="sessionValue">--------</span></div>
+        </div>
+        <div class="header-right">
+          <div class="status-pill" id="phasePill">
+            <span class="dot" aria-hidden="true"></span>
+            <span class="pill-label" id="phaseLabel">STANDBY</span>
+          </div>
+          <button id="menuButton" class="icon-btn" type="button" aria-label="Settings">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="#eef2f0" stroke-width="1.6" stroke-linecap="round">
+              <path d="M3 6h14M3 10h14M3 14h14" />
+            </svg>
+          </button>
+        </div>
       </header>
 
-      <section class="scanner-grid">
-        <div class="camera-panel">
-          <div class="video-wrap">
-            <video id="video" playsinline muted></video>
-            <div class="scan-frame" aria-hidden="true"></div>
-            <canvas id="canvas" hidden></canvas>
+      <!-- Docked HUD: capture progress -->
+      <section class="hud">
+        <div class="hud-top">
+          <div class="counter">
+            <span class="count" id="frameCount">00</span>
+            <span class="total">/<span id="frameTotal">0</span></span>
           </div>
-          <div class="controls">
-            <button id="startButton" type="button">Start Camera</button>
-            <button id="stopButton" type="button" disabled>Stop</button>
-            <button id="resetButton" type="button">Reset</button>
-            <select id="cameraSelect" aria-label="Camera"></select>
+          <div class="rate-block">
+            <div class="rate"><span id="rateValue">0</span><span class="fps"> fps</span></div>
+            <div class="rate-status" id="statusText">Idle</div>
           </div>
         </div>
 
-        <aside class="transfer-panel">
-          <div class="metric-row">
-            <span>Frames</span>
-            <strong id="frameCount">0 / 0</strong>
-          </div>
-          <div class="progress" aria-hidden="true">
-            <div id="progressBar"></div>
-          </div>
-          <div id="frameDots" class="frame-dots" aria-hidden="true"></div>
+        <div class="progress" aria-hidden="true">
+          <div id="progressBar"></div>
+        </div>
 
-          <dl class="details">
-            <div>
-              <dt>Session</dt>
-              <dd id="sessionValue">-</dd>
-            </div>
-            <div>
-              <dt>Mode</dt>
-              <dd id="modeValue">-</dd>
-            </div>
-            <div>
-              <dt>Decode rate</dt>
-              <dd id="rateValue">-</dd>
-            </div>
-            <div>
-              <dt>Status</dt>
-              <dd id="statusText">Idle</dd>
-            </div>
-            <div>
-              <dt>Last</dt>
-              <dd id="lastFrameValue">-</dd>
-            </div>
-            <div>
-              <dt>Missing</dt>
-              <dd id="missingValue">-</dd>
-            </div>
-          </dl>
+        <div id="frameDots" class="frame-grid" aria-hidden="true"></div>
 
-          <label class="result-label" for="resultText">Result</label>
-          <textarea id="resultText" spellcheck="false" readonly></textarea>
+        <div class="missing-line">
+          <span id="remainingText">Awaiting first frame</span>
+          <button id="detailsButton" class="link-btn" type="button">details ›</button>
+        </div>
+
+        <div class="primary-slot">
+          <button id="startButton" class="btn-primary" type="button">Start scanning</button>
+          <button id="stopButton" class="btn-ghost" type="button" disabled>Pause</button>
+        </div>
+      </section>
+
+      <!-- Result sheet (Complete state) -->
+      <div id="resultSheet" class="sheet-backdrop sheet-backdrop--solid" hidden>
+        <div class="sheet sheet--result">
+          <div class="result-head">
+            <div class="check-circle" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#06140d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3.5 9.5l3.5 3.5 7-8" />
+              </svg>
+            </div>
+            <div>
+              <div class="sheet-title">Transfer complete</div>
+              <div class="result-sub" id="resultSubtitle">— frames · gzip / jsQR</div>
+            </div>
+          </div>
+          <div class="result-box">
+            <textarea id="resultText" spellcheck="false" readonly></textarea>
+          </div>
           <div class="result-actions">
-            <button id="copyButton" type="button" disabled>Copy</button>
-            <button id="saveButton" type="button" disabled>Save .txt</button>
+            <button id="copyButton" class="btn-primary" type="button" disabled>Copy text</button>
+            <button id="saveButton" class="btn-ghost" type="button" disabled>Save .txt</button>
           </div>
-        </aside>
-      </section>
-
-      <section class="phone-panel">
-        <div>
-          <label for="accessUrl">Phone URL</label>
-          <input id="accessUrl" type="text" readonly>
+          <button id="scanAnotherButton" class="link-btn link-btn--muted link-btn--block" type="button">Scan another transfer</button>
         </div>
-        <button id="copyUrlButton" type="button">Copy URL</button>
-        <p id="networkHint">Localhost is ready for desktop testing.</p>
-      </section>
+      </div>
 
-      <section class="manual-panel">
-        <label for="manualFrames">Manual frames</label>
-        <div class="manual-row">
-          <textarea id="manualFrames" spellcheck="false" placeholder="AIRQR1|..."></textarea>
-          <button id="addManualButton" type="button">Add</button>
+      <!-- Settings sheet -->
+      <div id="settingsSheet" class="sheet-backdrop" hidden>
+        <div class="sheet">
+          <div class="grab-handle" aria-hidden="true"></div>
+          <div class="sheet-bar">
+            <span class="sheet-title">Settings</span>
+            <button class="icon-btn icon-btn--sm sheet-close" type="button" aria-label="Close">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="rgba(225,235,231,0.55)" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l8 8M11 3l-8 8" /></svg>
+            </button>
+          </div>
+
+          <div class="field">
+            <div class="field-label">Camera</div>
+            <select id="cameraSelect" class="field-row" aria-label="Camera"></select>
+          </div>
+
+          <div class="field">
+            <div class="field-label">Phone URL</div>
+            <div class="field-row field-row--split">
+              <input id="accessUrl" type="text" readonly>
+              <button id="copyUrlButton" class="link-btn" type="button">Copy</button>
+            </div>
+            <p id="networkHint" class="field-hint">Localhost is ready for desktop testing.</p>
+          </div>
+
+          <div class="field">
+            <div class="field-label">Manual frames</div>
+            <textarea id="manualFrames" class="field-area" spellcheck="false" placeholder="AIRQR1|…"></textarea>
+            <button id="addManualButton" class="btn-ghost btn-ghost--sm" type="button">Add frames</button>
+          </div>
+
+          <button id="resetButton" class="btn-ghost btn-ghost--full" type="button">Reset session</button>
         </div>
-      </section>
+      </div>
+
+      <!-- Details sheet -->
+      <div id="detailsSheet" class="sheet-backdrop" hidden>
+        <div class="sheet">
+          <div class="grab-handle" aria-hidden="true"></div>
+          <div class="sheet-bar">
+            <span class="sheet-title">Transfer detail</span>
+            <button class="icon-btn icon-btn--sm sheet-close" type="button" aria-label="Close">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="rgba(225,235,231,0.55)" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l8 8M11 3l-8 8" /></svg>
+            </button>
+          </div>
+          <dl class="stat-list">
+            <div class="stat-row"><dt>Session</dt><dd id="detailSession">—</dd></div>
+            <div class="stat-row"><dt>Mode</dt><dd id="modeValue">—</dd></div>
+            <div class="stat-row"><dt>Decode rate</dt><dd id="detailRate">—</dd></div>
+            <div class="stat-row"><dt>Status</dt><dd id="detailStatus">—</dd></div>
+            <div class="stat-row"><dt>Last frame</dt><dd id="lastFrameValue">—</dd></div>
+          </dl>
+          <div class="field" style="margin-top:14px">
+            <div class="field-label">Missing</div>
+            <div id="missingValue" class="missing-block">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Kept for the decode pipeline; not shown in the Signal UI. -->
+      <div id="supportStatus" class="sr-only">Checking scanner</div>
     </main>
 
     <script src="vendor/jsqr/jsQR.js"></script>

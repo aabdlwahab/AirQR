@@ -1,22 +1,36 @@
 "use strict";
 
 const els = {
+  app: document.querySelector("#app"),
   video: document.querySelector("#video"),
   canvas: document.querySelector("#canvas"),
   supportStatus: document.querySelector("#supportStatus"),
   startButton: document.querySelector("#startButton"),
   stopButton: document.querySelector("#stopButton"),
   resetButton: document.querySelector("#resetButton"),
+  scanAnotherButton: document.querySelector("#scanAnotherButton"),
   cameraSelect: document.querySelector("#cameraSelect"),
   frameCount: document.querySelector("#frameCount"),
+  frameTotal: document.querySelector("#frameTotal"),
+  remainingText: document.querySelector("#remainingText"),
   progressBar: document.querySelector("#progressBar"),
   frameDots: document.querySelector("#frameDots"),
+  phaseLabel: document.querySelector("#phaseLabel"),
   sessionValue: document.querySelector("#sessionValue"),
+  detailSession: document.querySelector("#detailSession"),
   modeValue: document.querySelector("#modeValue"),
   rateValue: document.querySelector("#rateValue"),
+  detailRate: document.querySelector("#detailRate"),
   statusText: document.querySelector("#statusText"),
+  detailStatus: document.querySelector("#detailStatus"),
   lastFrameValue: document.querySelector("#lastFrameValue"),
   missingValue: document.querySelector("#missingValue"),
+  resultSubtitle: document.querySelector("#resultSubtitle"),
+  resultSheet: document.querySelector("#resultSheet"),
+  settingsSheet: document.querySelector("#settingsSheet"),
+  detailsSheet: document.querySelector("#detailsSheet"),
+  menuButton: document.querySelector("#menuButton"),
+  detailsButton: document.querySelector("#detailsButton"),
   resultText: document.querySelector("#resultText"),
   copyButton: document.querySelector("#copyButton"),
   saveButton: document.querySelector("#saveButton"),
@@ -55,16 +69,41 @@ init();
 function init() {
   els.startButton.addEventListener("click", startCamera);
   els.stopButton.addEventListener("click", stopCamera);
-  els.resetButton.addEventListener("click", resetTransfer);
+  els.resetButton.addEventListener("click", () => { resetTransfer(); closeSheets(); });
+  els.scanAnotherButton.addEventListener("click", resetTransfer);
   els.copyButton.addEventListener("click", copyResult);
   els.saveButton.addEventListener("click", saveResult);
   els.copyUrlButton.addEventListener("click", copyAccessUrl);
   els.addManualButton.addEventListener("click", addManualFrames);
   els.cameraSelect.addEventListener("change", restartCamera);
+  els.menuButton.addEventListener("click", () => openSheet(els.settingsSheet));
+  els.detailsButton.addEventListener("click", () => { fillDetails(); openSheet(els.detailsSheet); });
+  for (const sheet of [els.settingsSheet, els.detailsSheet]) {
+    sheet.addEventListener("click", (event) => {
+      if (event.target === sheet || event.target.closest(".sheet-close")) {
+        closeSheets();
+      }
+    });
+  }
   populateAccessInfo();
   updateSupportStatus();
   updateUi();
   registerServiceWorker();
+}
+
+function openSheet(sheet) {
+  closeSheets();
+  sheet.hidden = false;
+}
+
+function closeSheets() {
+  els.settingsSheet.hidden = true;
+  els.detailsSheet.hidden = true;
+}
+
+function fillDetails() {
+  els.detailRate.textContent = `${els.rateValue.textContent} fps`;
+  els.detailStatus.textContent = els.statusText.textContent;
 }
 
 function registerServiceWorker() {
@@ -128,6 +167,11 @@ function setSupport(kind, text) {
     els.supportStatus.classList.add(kind);
   }
   els.supportStatus.textContent = text;
+  // The Signal UI has no dedicated support badge, so surface warnings (no
+  // camera, no decoder, insecure context) on the HUD status line instead.
+  if (kind === "warn") {
+    setStatus(text);
+  }
 }
 
 async function startCamera() {
@@ -245,7 +289,7 @@ function startRateMeter() {
   state.rateTimer = window.setInterval(() => {
     const decodes = state.scanCount - state.rateBaseline;
     state.rateBaseline = state.scanCount;
-    els.rateValue.textContent = `${Math.round(decodes * (1000 / RATE_WINDOW_MS))} /s`;
+    els.rateValue.textContent = `${Math.round(decodes * (1000 / RATE_WINDOW_MS))}`;
   }, RATE_WINDOW_MS);
 }
 
@@ -254,7 +298,7 @@ function stopRateMeter() {
     window.clearInterval(state.rateTimer);
     state.rateTimer = null;
   }
-  els.rateValue.textContent = "-";
+  els.rateValue.textContent = "0";
 }
 
 async function scanLoop() {
@@ -542,6 +586,7 @@ function resetTransfer() {
   els.resultText.value = "";
   els.manualFrames.value = "";
   els.copyButton.disabled = true;
+  els.copyButton.textContent = "Copy text";
   els.saveButton.disabled = true;
   setStatus(state.running ? "Scanning" : "Idle");
   updateUi();
@@ -563,13 +608,40 @@ function updateUi() {
   const meta = state.metadata;
   const total = meta?.total || 0;
   const count = state.frames.size;
-  els.frameCount.textContent = `${count} / ${total}`;
-  els.sessionValue.textContent = meta?.session || "-";
-  els.modeValue.textContent = meta ? `${meta.flags === "z" ? "gzip" : "plain"} / ${state.decoderName || "decoder"}` : "-";
-  els.lastFrameValue.textContent = state.lastFrameIndex ? `${state.lastFrameIndex} / ${total}` : "-";
+  const mode = meta ? `${meta.flags === "z" ? "gzip" : "plain"} / ${state.decoderName || "decoder"}` : "—";
+  els.frameCount.textContent = String(count).padStart(2, "0");
+  els.frameTotal.textContent = total;
+  els.remainingText.textContent = remainingText(total, count);
+  els.sessionValue.textContent = meta?.session || "--------";
+  els.detailSession.textContent = meta?.session || "—";
+  els.modeValue.textContent = mode;
+  els.lastFrameValue.textContent = state.lastFrameIndex ? `${state.lastFrameIndex} / ${total}` : "—";
   els.missingValue.textContent = missingFramesText(total);
   els.progressBar.style.width = total ? `${Math.round((count / total) * 100)}%` : "0";
   renderFrameDots(total);
+  updatePhase(total, count, mode);
+}
+
+function remainingText(total, count) {
+  if (!total) {
+    return "Awaiting first frame";
+  }
+  const remaining = total - count;
+  if (remaining <= 0) {
+    return "All frames captured";
+  }
+  return `${remaining} frame${remaining === 1 ? "" : "s"} remaining`;
+}
+
+function updatePhase(total, count, mode) {
+  const phase = state.completed ? "complete" : state.running ? "scanning" : "idle";
+  els.app.dataset.phase = phase;
+  els.phaseLabel.textContent = phase === "scanning" ? "CAPTURING" : phase === "complete" ? "DONE" : "STANDBY";
+  els.startButton.textContent = state.completed ? "Scan again" : "Start scanning";
+  els.resultSheet.hidden = phase !== "complete";
+  if (phase === "complete") {
+    els.resultSubtitle.textContent = `${total || count} frames · ${mode}`;
+  }
 }
 
 function missingFramesText(total) {
@@ -601,7 +673,7 @@ function renderFrameDots(total) {
   for (let index = 1; index <= total; index++) {
     const dot = document.createElement("span");
     if (state.frames.has(index)) {
-      dot.className = "seen";
+      dot.className = index === state.lastFrameIndex ? "seen last" : "seen";
     }
     fragment.append(dot);
   }
@@ -618,12 +690,21 @@ function addManualFrames() {
 async function copyResult() {
   try {
     await navigator.clipboard.writeText(els.resultText.value);
+    flashCopied();
     setStatus("Copied");
   } catch (error) {
     els.resultText.focus();
     els.resultText.select();
     setStatus("Select and copy manually");
   }
+}
+
+function flashCopied() {
+  els.copyButton.textContent = "Copied ✓";
+  window.clearTimeout(state.copyTimer);
+  state.copyTimer = window.setTimeout(() => {
+    els.copyButton.textContent = "Copy text";
+  }, 1400);
 }
 
 function saveResult() {
@@ -640,6 +721,7 @@ function saveResult() {
 
 function setStatus(text) {
   els.statusText.textContent = text;
+  els.detailStatus.textContent = text;
 }
 
 function base64UrlToBytes(text) {
