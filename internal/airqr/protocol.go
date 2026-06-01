@@ -51,21 +51,7 @@ func NewTransfer(input []byte, opts Options) (Transfer, error) {
 		return Transfer{}, fmt.Errorf("chunk size must be greater than 0")
 	}
 
-	hash := sha256.Sum256(input)
-	shaHex := hex.EncodeToString(hash[:])
-
-	flags := flagPlain
-	transferBytes := input
-	if opts.Compress {
-		compressed, err := gzipBytes(input)
-		if err != nil {
-			return Transfer{}, err
-		}
-		if len(compressed) < len(input) {
-			flags = flagGzip
-			transferBytes = compressed
-		}
-	}
+	shaHex, flags, transferBytes := prepareTransfer(input, opts.Compress)
 
 	sessionID := newSessionID()
 	total := (len(transferBytes) + opts.ChunkSize - 1) / opts.ChunkSize
@@ -220,11 +206,38 @@ func Reassemble(frames []Frame) ([]byte, error) {
 	if len(result) != first.OriginalSize {
 		return nil, fmt.Errorf("size mismatch: got %d bytes, expected %d", len(result), first.OriginalSize)
 	}
-	hash := sha256.Sum256(result)
-	if hex.EncodeToString(hash[:]) != first.SHA256Hex {
-		return nil, errors.New("sha256 mismatch")
+	if err := verifyHash(result, first.SHA256Hex); err != nil {
+		return nil, err
 	}
 	return result, nil
+}
+
+// prepareTransfer hashes the input and chooses the on-wire bytes: gzip when
+// requested and smaller, otherwise plain. It is shared by the AIRQR1 chunker and
+// the AIRQR2 fountain encoder so both describe a transfer identically.
+func prepareTransfer(input []byte, compress bool) (shaHex, flags string, transferBytes []byte) {
+	hash := sha256.Sum256(input)
+	shaHex = hex.EncodeToString(hash[:])
+	flags = flagPlain
+	transferBytes = input
+	if compress {
+		// gzipBytes only fails on a writer error, which a bytes.Buffer never
+		// produces; on the off chance it does, fall back to the plain bytes.
+		if compressed, err := gzipBytes(input); err == nil && len(compressed) < len(input) {
+			flags = flagGzip
+			transferBytes = compressed
+		}
+	}
+	return shaHex, flags, transferBytes
+}
+
+// verifyHash checks that data hashes to the expected lowercase hex SHA-256.
+func verifyHash(data []byte, expectedHex string) error {
+	hash := sha256.Sum256(data)
+	if hex.EncodeToString(hash[:]) != expectedHex {
+		return errors.New("sha256 mismatch")
+	}
+	return nil
 }
 
 func gzipBytes(input []byte) ([]byte, error) {

@@ -81,7 +81,9 @@ func runSend(args []string) error {
 	var wide bool
 	var onlyFrame int
 	var eccName string
+	var fountain bool
 	addCommonFlags(fs, &common)
+	fs.BoolVar(&fountain, "fountain", true, "use AIRQR2 rateless fountain coding for multi-frame transfers")
 	fs.Float64Var(&fps, "fps", 1.0, "animation frames per second")
 	fs.IntVar(&cycles, "cycles", 0, "number of animation cycles; 0 loops until interrupted")
 	fs.IntVar(&onlyFrame, "frame", 0, "render only this 1-based frame")
@@ -111,6 +113,12 @@ func runSend(args []string) error {
 	input, name, err := readInput(fs.Args())
 	if err != nil {
 		return err
+	}
+
+	renderOpts := terminal.RenderOptions{QuietZone: 4, Color: !monochrome, Compact: !wide}
+	if fountain {
+		return sendFountain(os.Stdout, input, name, common, level, renderOpts,
+			fps, cycles, onlyFrame, maxVersion, variableSize, noClear)
 	}
 
 	transfer, err := airqr.NewTransfer(input, airqr.Options{
@@ -174,6 +182,131 @@ func runSend(args []string) error {
 	return animate(os.Stdout, header, rendered, fps, cycles, noClear)
 }
 
+// sendFountain renders an AIRQR2 rateless transfer. Multi-symbol transfers
+// stream an unbounded sequence of fresh coded frames (ESI 0,1,2,…) so the
+// receiver always makes progress and never depends on catching a specific frame.
+func sendFountain(out io.Writer, input []byte, name string, common commonFlags, level qrcode.Ecc,
+	renderOpts terminal.RenderOptions, fps float64, cycles, onlyFrame, maxVersion int, variableSize, noClear bool) error {
+	enc, err := airqr.NewFountainEncoder(input, airqr.Options{ChunkSize: common.chunkSize, Compress: !common.noCompress})
+	if err != nil {
+		return err
+	}
+
+	// Reserve QR capacity for the widest ESI we might ever display so the scan
+	// target never resizes mid-stream (which would force the camera to refocus).
+	minVersion := 1
+	if !variableSize {
+		code, err := qrcode.EncodeText(enc.Payload(enc.K+9_999_999), level, maxVersion)
+		if err != nil {
+			return fmt.Errorf("symbol size too large: %w; lower --chunk-size, raise --max-version, or lower --ecc", err)
+		}
+		minVersion = code.Version
+	}
+
+	render := func(esi int) (string, int, error) {
+		code, err := qrcode.EncodeTextAtLeast(enc.Payload(esi), level, minVersion, maxVersion)
+		if err != nil {
+			return "", 0, fmt.Errorf("esi %d: %w; lower --chunk-size, raise --max-version, or lower --ecc", esi, err)
+		}
+		return terminal.Render(code, renderOpts), code.Version, nil
+	}
+
+	// A single static frame: --frame N (ESI N-1) or a one-symbol transfer.
+	if onlyFrame > 0 || enc.K == 1 {
+		esi := 0
+		if onlyFrame > 0 {
+			esi = onlyFrame - 1
+		}
+		frame, version, err := render(esi)
+		if err != nil {
+			return err
+		}
+		fmt.Fprint(out, fountainHeader(name, enc, version, level))
+		fmt.Fprint(out, frame)
+		fmt.Fprintf(out, "ESI %d  |  K=%d\n", esi, enc.K)
+		return nil
+	}
+
+	headerVersion := minVersion
+	if variableSize {
+		if _, version, err := render(0); err == nil {
+			headerVersion = version
+		}
+	}
+	return animateFountain(out, fountainHeader(name, enc, headerVersion, level), enc, render, fps, cycles, noClear)
+}
+
+func fountainHeader(name string, enc *airqr.FountainEncoder, version int, level qrcode.Ecc) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "AIRQR transfer: %s\n", name)
+	if enc.Flags == "z" {
+		fmt.Fprintf(&b, "Size: %d bytes -> %d bytes gzip\n", enc.OriginalSize, enc.TransferSize)
+	} else {
+		fmt.Fprintf(&b, "Size: %d bytes\n", enc.OriginalSize)
+	}
+	fmt.Fprintf(&b, "Symbols: %d (%d bytes each, rateless fountain)\n", enc.K, enc.T)
+	fmt.Fprintf(&b, "Session: %s\n", enc.SessionID)
+	fmt.Fprintf(&b, "SHA-256: %s\n", enc.SHA256Hex)
+	fmt.Fprintf(&b, "QR version: %d (EC level %s)\n", version, level)
+	b.WriteByte('\n')
+	return b.String()
+}
+
+func animateFountain(out io.Writer, header string, enc *airqr.FountainEncoder,
+	render func(int) (string, int, error), fps float64, cycles int, noClear bool) error {
+	delay := time.Duration(float64(time.Second) / fps)
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(interrupt)
+
+	if !noClear {
+		terminal.Clear(out)
+		terminal.HideCursor(out)
+		defer terminal.ShowCursor(out)
+	}
+
+	// cycles>0 emits cycles*K frames (a generous default of redundancy) then
+	// stops; cycles==0 streams forever until interrupted.
+	limit := 0
+	if cycles > 0 {
+		limit = cycles * enc.K
+	}
+	for esi := 0; ; esi++ {
+		select {
+		case <-interrupt:
+			if !noClear {
+				terminal.Clear(out)
+			}
+			return nil
+		default:
+		}
+		frame, _, err := render(esi)
+		if err != nil {
+			return err
+		}
+		content := fmt.Sprintf("%s%sESI %d  |  K=%d  |  %.2f fps  |  Ctrl-C to quit\n", header, frame, esi, enc.K, fps)
+		if noClear {
+			fmt.Fprint(out, content)
+		} else {
+			terminal.Paint(out, content)
+		}
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-interrupt:
+			timer.Stop()
+			if !noClear {
+				terminal.Clear(out)
+			}
+			return nil
+		case <-timer.C:
+		}
+		if limit > 0 && esi+1 >= limit {
+			return nil
+		}
+	}
+}
+
 func runInspect(args []string) error {
 	fs := flag.NewFlagSet("inspect", flag.ExitOnError)
 	var common commonFlags
@@ -218,27 +351,69 @@ func runDecode(args []string) error {
 
 	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 1024), 1024*1024)
-	var frames []airqr.Frame
+	var lines []string
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
+		if line != "" {
+			lines = append(lines, line)
 		}
-		frame, err := airqr.ParseFrame(line)
-		if err != nil {
-			return err
-		}
-		frames = append(frames, frame)
 	}
 	if err := scanner.Err(); err != nil {
 		return err
 	}
-	result, err := airqr.Reassemble(frames)
+	if len(lines) == 0 {
+		return fmt.Errorf("no frames")
+	}
+
+	var result []byte
+	var err error
+	if airqr.IsFountainPayload(lines[0]) {
+		result, err = decodeFountainLines(lines)
+	} else {
+		result, err = decodeLegacyLines(lines)
+	}
 	if err != nil {
 		return err
 	}
 	_, err = os.Stdout.Write(result)
 	return err
+}
+
+func decodeLegacyLines(lines []string) ([]byte, error) {
+	frames := make([]airqr.Frame, 0, len(lines))
+	for _, line := range lines {
+		frame, err := airqr.ParseFrame(line)
+		if err != nil {
+			return nil, err
+		}
+		frames = append(frames, frame)
+	}
+	return airqr.Reassemble(frames)
+}
+
+func decodeFountainLines(lines []string) ([]byte, error) {
+	var dec *airqr.FountainDecoder
+	for _, line := range lines {
+		frame, err := airqr.ParseFountainFrame(line)
+		if err != nil {
+			return nil, err
+		}
+		if dec == nil {
+			dec = airqr.NewFountainDecoder(frame.K, frame.T)
+			dec.Flags = frame.Flags
+			dec.TransferSize = frame.TransferSize
+			dec.OriginalSize = frame.OriginalSize
+			dec.SHA256Hex = frame.SHA256Hex
+			dec.SessionID = frame.SessionID
+		}
+		if dec.Add(frame.ESI, frame.Data) {
+			return dec.Result()
+		}
+	}
+	if dec == nil {
+		return nil, fmt.Errorf("no frames")
+	}
+	return nil, fmt.Errorf("incomplete fountain transfer: rank %d/%d", dec.Rank, dec.K)
 }
 
 func readInput(args []string) ([]byte, string, error) {

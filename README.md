@@ -69,6 +69,34 @@ trusts:
 
 ## Frame Format
 
+### AIRQR2 — rateless fountain (default for multi-frame transfers)
+
+By default, multi-frame transfers use a systematic random-linear fountain code
+over GF(256). The transfer bytes are split into `K` source symbols of `T` bytes;
+the sender then streams an unbounded sequence of coded symbols identified by an
+encoding symbol id (`esi`):
+
+```text
+AIRQR2|<session>|<esi>|<K>|<T>|<flags>|<transfer-size>|<original-size>|<sha256>|<base64url-symbol>
+```
+
+- `esi` in `[0, K)` carries the source symbol itself (systematic); `esi >= K`
+  carries a pseudo-random GF(256) combination of all source symbols.
+- The combination coefficients are derived deterministically from `esi` (a fully
+  specified splitmix32 PRNG), so they never travel in the frame — the decoder
+  regenerates them.
+
+A receiver reconstructs the file from **any `K` linearly independent symbols**
+(in practice `K` plus a frame or two), in any order. Skipped or never-seen frames
+no longer matter: every frame that raises the decode rank makes progress, and the
+sender emits fresh symbols forever rather than looping a fixed set. `flags`,
+`original-size`, and `sha256` describe the final text after decompression;
+`transfer-size` is the length of the (possibly gzipped) transfer bytes.
+
+Pass `--fountain=false` to fall back to the AIRQR1 chunking below.
+
+### AIRQR1 — fixed ordered chunks (legacy)
+
 Each QR contains a full metadata header so a scanner can deduplicate, order, and
 verify frames:
 
@@ -78,7 +106,8 @@ AIRQR1|<session>|<index>|<total>|<flags>|<original-size>|<sha256>|<base64url-chu
 
 `index` is 1-based. `flags` is `z` for gzip-compressed transfer bytes or `n`
 for uncompressed transfer bytes. The SHA-256 hash and original size refer to the
-final text after decompression.
+final text after decompression. Every chunk is mandatory, so a single missing
+frame stalls the transfer until it is seen again.
 
 ## Scanner Note
 

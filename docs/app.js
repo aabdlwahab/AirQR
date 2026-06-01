@@ -60,6 +60,10 @@ const state = {
   scanCount: 0,
   rateBaseline: 0,
   rateTimer: null,
+  // AIRQR2 fountain decode state (null until an AIRQR2 frame arrives).
+  fountain: null,
+  fountainRank: 0,
+  fountainEsi: null,
 };
 
 const RATE_WINDOW_MS = 500;
@@ -454,6 +458,11 @@ async function addPayload(rawPayload) {
   state.lastPayload = payload;
   state.lastPayloadAt = now;
 
+  if (payload.startsWith("AIRQR2|")) {
+    await handleFountainFrame(payload);
+    return;
+  }
+
   if (!payload.startsWith("AIRQR1|")) {
     state.completed = true;
     els.resultText.value = payload;
@@ -612,6 +621,154 @@ async function assembleTransfer() {
   }
 }
 
+async function handleFountainFrame(payload) {
+  if (!window.AirQRFountain) {
+    setStatus("Fountain decoder unavailable");
+    return;
+  }
+  let frame;
+  try {
+    frame = parseFountainFrame(payload);
+  } catch (error) {
+    setStatus(error.message);
+    return;
+  }
+
+  // A new session (or switching from a legacy AIRQR1 capture) starts fresh.
+  if (state.metadata && (!state.metadata.fountain || state.metadata.session !== frame.session)) {
+    clearTransferState();
+  }
+  if (!state.fountain) {
+    state.metadata = {
+      session: frame.session,
+      total: frame.K,
+      flags: frame.flags,
+      originalSize: frame.originalSize,
+      sha256: frame.sha256,
+      fountain: true,
+      symbolSize: frame.T,
+      transferSize: frame.transferSize,
+    };
+    state.fountain = new window.AirQRFountain.Decoder(frame.K, frame.T);
+  }
+
+  const mismatch = fountainMismatch(frame);
+  if (mismatch) {
+    setStatus(mismatch);
+    return;
+  }
+
+  state.fountainEsi = frame.esi;
+  state.lastFrameAt = Date.now();
+  let done;
+  try {
+    done = state.fountain.add(frame.esi, frame.data);
+  } catch (error) {
+    setStatus(error.message);
+    return;
+  }
+  state.fountainRank = state.fountain.rank;
+  if (!state.completed) {
+    setStatus(`Symbol ${frame.esi} · ${state.fountain.rank}/${frame.K}`);
+  }
+
+  if (done && !state.completed) {
+    await finishFountain(frame);
+  }
+  updateUi();
+}
+
+async function finishFountain(frame) {
+  try {
+    const packed = state.fountain.packed();
+    if (!packed) {
+      throw new Error("Decoder incomplete");
+    }
+    let bytes = packed.subarray(0, frame.transferSize);
+    if (frame.flags === "z") {
+      bytes = await decompressGzip(bytes);
+    }
+    if (bytes.length !== frame.originalSize) {
+      throw new Error(`Size check failed: ${bytes.length} / ${frame.originalSize}`);
+    }
+    const hash = await sha256Hex(bytes);
+    if (hash !== frame.sha256) {
+      throw new Error("Hash check failed");
+    }
+    els.resultText.value = new TextDecoder().decode(bytes);
+    els.copyButton.disabled = false;
+    els.saveButton.disabled = false;
+    state.completed = true;
+    setStatus("Complete");
+    // Transfer finished; power the camera down until the user scans again.
+    stopCamera();
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+function fountainMismatch(frame) {
+  const meta = state.metadata;
+  if (frame.K !== meta.total) {
+    return "Symbol count mismatch";
+  }
+  if (frame.T !== meta.symbolSize) {
+    return "Symbol size mismatch";
+  }
+  if (frame.flags !== meta.flags) {
+    return "Compression flag mismatch";
+  }
+  if (frame.originalSize !== meta.originalSize) {
+    return "Size mismatch";
+  }
+  if (frame.transferSize !== meta.transferSize) {
+    return "Transfer size mismatch";
+  }
+  if (frame.sha256 !== meta.sha256) {
+    return "Hash mismatch";
+  }
+  return "";
+}
+
+function parseFountainFrame(payload) {
+  const parts = payload.split("|");
+  if (parts.length !== 10) {
+    throw new Error("Invalid AirQR2 frame");
+  }
+  const [prefix, session, esiText, kText, tText, flags, transferText, sizeText, sha256, dataText] = parts;
+  if (prefix !== "AIRQR2") {
+    throw new Error("Unsupported AirQR version");
+  }
+  const esi = Number.parseInt(esiText, 10);
+  const K = Number.parseInt(kText, 10);
+  const T = Number.parseInt(tText, 10);
+  const transferSize = Number.parseInt(transferText, 10);
+  const originalSize = Number.parseInt(sizeText, 10);
+  if (!Number.isInteger(esi) || esi < 0) {
+    throw new Error("Invalid symbol id");
+  }
+  if (!Number.isInteger(K) || K <= 0) {
+    throw new Error("Invalid symbol count");
+  }
+  if (!Number.isInteger(T) || T <= 0) {
+    throw new Error("Invalid symbol size");
+  }
+  if (flags !== "z" && flags !== "n") {
+    throw new Error("Unsupported AirQR flags");
+  }
+  if (!Number.isInteger(transferSize) || transferSize < 0 || !Number.isInteger(originalSize) || originalSize < 0) {
+    throw new Error("Invalid transfer size");
+  }
+  if (!/^[0-9a-f]{64}$/i.test(sha256)) {
+    throw new Error("Invalid transfer hash");
+  }
+  const data = base64UrlToBytes(dataText);
+  if (data.length !== T) {
+    throw new Error("Symbol length mismatch");
+  }
+  return { session, esi, K, T, flags, transferSize, originalSize, sha256: sha256.toLowerCase(), data };
+}
+
 function resetTransfer() {
   clearTransferState();
   els.resultText.value = "";
@@ -633,27 +790,32 @@ function clearTransferState() {
   state.lastPayloadAt = 0;
   state.lastFrameIndex = 0;
   state.lastFrameAt = 0;
+  state.fountain = null;
+  state.fountainRank = 0;
+  state.fountainEsi = null;
 }
 
 function updateUi() {
   const meta = state.metadata;
+  const fountain = !!meta?.fountain;
   const total = meta?.total || 0;
-  const count = state.frames.size;
-  const mode = meta ? `${meta.flags === "z" ? "gzip" : "plain"} / ${state.decoderName || "decoder"}` : "—";
+  const count = fountain ? state.fountainRank : state.frames.size;
+  const decoderLabel = fountain ? "fountain" : state.decoderName || "decoder";
+  const mode = meta ? `${meta.flags === "z" ? "gzip" : "plain"} / ${decoderLabel}` : "—";
   els.frameCount.textContent = String(count).padStart(2, "0");
   els.frameTotal.textContent = total;
-  els.remainingText.textContent = remainingText(total, count);
+  els.remainingText.textContent = remainingText(total, count, fountain);
   els.sessionValue.textContent = meta?.session || "--------";
   els.detailSession.textContent = meta?.session || "—";
   els.modeValue.textContent = mode;
-  els.lastFrameValue.textContent = state.lastFrameIndex ? `${state.lastFrameIndex} / ${total}` : "—";
-  els.missingValue.textContent = missingFramesText(total);
+  els.lastFrameValue.textContent = lastFrameText(total, fountain);
+  els.missingValue.textContent = missingFramesText(total, count, fountain);
   els.progressBar.style.width = total ? `${Math.round((count / total) * 100)}%` : "0";
-  renderFrameDots(total);
+  renderFrameDots(total, count, fountain);
   updatePhase(total, count, mode);
 }
 
-function remainingText(total, count) {
+function remainingText(total, count, fountain) {
   if (!total) {
     return "Awaiting first frame";
   }
@@ -661,7 +823,17 @@ function remainingText(total, count) {
   if (remaining <= 0) {
     return "All frames captured";
   }
+  if (fountain) {
+    return `${remaining} more symbol${remaining === 1 ? "" : "s"} needed`;
+  }
   return `${remaining} frame${remaining === 1 ? "" : "s"} remaining`;
+}
+
+function lastFrameText(total, fountain) {
+  if (fountain) {
+    return state.fountainEsi === null ? "—" : `ESI ${state.fountainEsi}`;
+  }
+  return state.lastFrameIndex ? `${state.lastFrameIndex} / ${total}` : "—";
 }
 
 function updatePhase(total, count, mode) {
@@ -675,9 +847,14 @@ function updatePhase(total, count, mode) {
   }
 }
 
-function missingFramesText(total) {
+function missingFramesText(total, count, fountain) {
   if (!total) {
     return "-";
+  }
+  if (fountain) {
+    // Rateless: there are no specific missing indices, only a symbol shortfall.
+    const remaining = total - count;
+    return remaining > 0 ? `${remaining} more symbol${remaining === 1 ? "" : "s"}` : "none";
   }
   const missing = [];
   for (let index = 1; index <= total; index++) {
@@ -695,7 +872,7 @@ function missingFramesText(total) {
   return `${missing.join(", ")}${suffix}`;
 }
 
-function renderFrameDots(total) {
+function renderFrameDots(total, count, fountain) {
   els.frameDots.innerHTML = "";
   if (!total || total > 180) {
     return;
@@ -703,7 +880,13 @@ function renderFrameDots(total) {
   const fragment = document.createDocumentFragment();
   for (let index = 1; index <= total; index++) {
     const dot = document.createElement("span");
-    if (state.frames.has(index)) {
+    if (fountain) {
+      // No per-index identity; fill a progress meter of `count` cells, with the
+      // newest pivot ringed.
+      if (index <= count) {
+        dot.className = index === count ? "seen last" : "seen";
+      }
+    } else if (state.frames.has(index)) {
       dot.className = index === state.lastFrameIndex ? "seen last" : "seen";
     }
     fragment.append(dot);
