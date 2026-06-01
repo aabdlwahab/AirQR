@@ -21,6 +21,10 @@ const els = {
   modeValue: document.querySelector("#modeValue"),
   rateValue: document.querySelector("#rateValue"),
   detailRate: document.querySelector("#detailRate"),
+  elapsedValue: document.querySelector("#elapsedValue"),
+  etaValue: document.querySelector("#etaValue"),
+  detailElapsed: document.querySelector("#detailElapsed"),
+  detailEta: document.querySelector("#detailEta"),
   statusText: document.querySelector("#statusText"),
   detailStatus: document.querySelector("#detailStatus"),
   lastFrameValue: document.querySelector("#lastFrameValue"),
@@ -64,6 +68,9 @@ const state = {
   fountain: null,
   fountainRank: 0,
   fountainEsi: null,
+  // Timing: set when the first frame lands; drives elapsed + adaptive ETA.
+  transferStartAt: 0,
+  clockTimer: null,
 };
 
 const RATE_WINDOW_MS = 500;
@@ -108,6 +115,7 @@ function closeSheets() {
 function fillDetails() {
   els.detailRate.textContent = `${els.rateValue.textContent} fps`;
   els.detailStatus.textContent = els.statusText.textContent;
+  updateTiming();
 }
 
 function registerServiceWorker() {
@@ -221,6 +229,7 @@ async function startCamera() {
     setStatus(state.detector || window.jsQR ? "Scanning" : "Camera open");
     updateUi();
     startRateMeter();
+    startClock();
     scanLoop();
   } catch (error) {
     setStatus(cameraErrorMessage(error));
@@ -231,6 +240,7 @@ async function startCamera() {
 function stopCamera() {
   state.running = false;
   stopRateMeter();
+  stopClock();
   if (state.stream) {
     for (const track of state.stream.getTracks()) {
       track.stop();
@@ -331,6 +341,56 @@ function stopRateMeter() {
     state.rateTimer = null;
   }
   els.rateValue.textContent = "0";
+}
+
+function startClock() {
+  stopClock();
+  // Refresh elapsed/ETA once a second so the clock advances even when no new
+  // frame has been decoded yet.
+  state.clockTimer = window.setInterval(updateTiming, 1000);
+}
+
+function stopClock() {
+  if (state.clockTimer) {
+    window.clearInterval(state.clockTimer);
+    state.clockTimer = null;
+  }
+}
+
+function updateTiming() {
+  const meta = state.metadata;
+  const total = meta?.total || 0;
+  const count = meta?.fountain ? state.fountainRank : state.frames.size;
+  const left = total ? Math.max(0, total - count) : 0;
+  const elapsedMs = state.transferStartAt ? Date.now() - state.transferStartAt : 0;
+
+  const elapsed = formatDuration(elapsedMs);
+  els.elapsedValue.textContent = elapsed;
+  els.detailElapsed.textContent = state.transferStartAt ? elapsed : "—";
+
+  let eta;
+  if (state.completed || (total && left === 0)) {
+    eta = "done";
+  } else if (count > 0 && left > 0 && elapsedMs > 750) {
+    // Adaptive: project the average pace so far (elapsed per captured frame)
+    // across the frames still missing. Naturally self-corrects as it runs.
+    eta = `~${formatDuration((elapsedMs / count) * left)} left`;
+  } else {
+    eta = "—";
+  }
+  els.etaValue.textContent = eta;
+  els.detailEta.textContent = eta === "—" ? "—" : eta.replace(/^~|\s*left$/g, "");
+}
+
+function formatDuration(ms) {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
 async function scanLoop() {
@@ -793,6 +853,7 @@ function clearTransferState() {
   state.fountain = null;
   state.fountainRank = 0;
   state.fountainEsi = null;
+  state.transferStartAt = 0;
 }
 
 function updateUi() {
@@ -800,6 +861,10 @@ function updateUi() {
   const fountain = !!meta?.fountain;
   const total = meta?.total || 0;
   const count = fountain ? state.fountainRank : state.frames.size;
+  // Start the transfer clock on the first decoded frame.
+  if (count > 0 && !state.transferStartAt) {
+    state.transferStartAt = Date.now();
+  }
   const decoderLabel = fountain ? "fountain" : state.decoderName || "decoder";
   const mode = meta ? `${meta.flags === "z" ? "gzip" : "plain"} / ${decoderLabel}` : "—";
   els.frameCount.textContent = String(count).padStart(2, "0");
@@ -813,6 +878,7 @@ function updateUi() {
   els.progressBar.style.width = total ? `${Math.round((count / total) * 100)}%` : "0";
   renderFrameDots(total, count, fountain);
   updatePhase(total, count, mode);
+  updateTiming();
 }
 
 function remainingText(total, count, fountain) {

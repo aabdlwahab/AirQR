@@ -71,6 +71,11 @@
           <div id="progressBar"></div>
         </div>
 
+        <div class="timing-line">
+          <span>Elapsed <span id="elapsedValue">0:00</span></span>
+          <span id="etaValue">—</span>
+        </div>
+
         <div id="frameDots" class="frame-grid" aria-hidden="true"></div>
 
         <div class="missing-line">
@@ -158,6 +163,8 @@
             <div class="stat-row"><dt>Session</dt><dd id="detailSession">—</dd></div>
             <div class="stat-row"><dt>Mode</dt><dd id="modeValue">—</dd></div>
             <div class="stat-row"><dt>Decode rate</dt><dd id="detailRate">—</dd></div>
+            <div class="stat-row"><dt>Elapsed</dt><dd id="detailElapsed">—</dd></div>
+            <div class="stat-row"><dt>Est. remaining</dt><dd id="detailEta">—</dd></div>
             <div class="stat-row"><dt>Status</dt><dd id="detailStatus">—</dd></div>
             <div class="stat-row"><dt>Last frame</dt><dd id="lastFrameValue">—</dd></div>
           </dl>

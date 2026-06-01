@@ -393,6 +393,21 @@ video {
   color: var(--muted);
 }
 
+.timing-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 14px 0 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.timing-line #etaValue {
+  color: var(--accent);
+}
+
 /* ── Buttons ──────────────────────────────────────────────── */
 .btn-primary {
   width: 100%;
