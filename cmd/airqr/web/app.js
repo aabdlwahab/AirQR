@@ -261,7 +261,24 @@ async function populateCameras() {
   }
   if (current && cameras.some((camera) => camera.deviceId === current)) {
     els.cameraSelect.value = current;
+    return;
   }
+  const backId = backCameraId(cameras);
+  if (backId) {
+    els.cameraSelect.value = backId;
+  }
+}
+
+function backCameraId(cameras) {
+  // The stream is opened with facingMode "environment", so the active track
+  // already points at the back camera — match the dropdown to it exactly.
+  const activeId = state.stream?.getVideoTracks?.()[0]?.getSettings?.().deviceId;
+  if (activeId && cameras.some((camera) => camera.deviceId === activeId)) {
+    return activeId;
+  }
+  // No active track yet: fall back to a label heuristic.
+  const back = cameras.find((camera) => /\b(back|rear|environment)\b/i.test(camera.label));
+  return back ? back.deviceId : "";
 }
 
 async function tuneCameraTrack(stream) {
