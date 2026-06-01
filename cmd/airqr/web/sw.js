@@ -1,7 +1,7 @@
 "use strict";
 
 // Bump CACHE whenever the cached assets change so clients pick up the update.
-const CACHE = "airqr-v5";
+const CACHE = "airqr-v6";
 const ASSETS = [
   "./",
   "./index.html",
