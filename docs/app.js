@@ -67,10 +67,10 @@ const RATE_WINDOW_MS = 500;
 init();
 
 function init() {
-  els.startButton.addEventListener("click", startCamera);
+  els.startButton.addEventListener("click", startScanning);
   els.stopButton.addEventListener("click", stopCamera);
   els.resetButton.addEventListener("click", () => { resetTransfer(); closeSheets(); });
-  els.scanAnotherButton.addEventListener("click", resetTransfer);
+  els.scanAnotherButton.addEventListener("click", startScanning);
   els.copyButton.addEventListener("click", copyResult);
   els.saveButton.addEventListener("click", saveResult);
   els.copyUrlButton.addEventListener("click", copyAccessUrl);
@@ -174,6 +174,15 @@ function setSupport(kind, text) {
   }
 }
 
+async function startScanning() {
+  // "Start scanning" / "Scan again": clear a finished transfer first so the
+  // camera reopens into a fresh capture instead of the completed state.
+  if (state.completed) {
+    resetTransfer();
+  }
+  await startCamera();
+}
+
 async function startCamera() {
   if (!isSecureContext) {
     setStatus("Open over HTTPS or localhost");
@@ -206,6 +215,7 @@ async function startCamera() {
     els.stopButton.disabled = false;
     await populateCameras();
     setStatus(state.detector || window.jsQR ? "Scanning" : "Camera open");
+    updateUi();
     startRateMeter();
     scanLoop();
   } catch (error) {
@@ -226,6 +236,7 @@ function stopCamera() {
   els.video.srcObject = null;
   els.startButton.disabled = false;
   els.stopButton.disabled = true;
+  updateUi();
 }
 
 async function restartCamera() {
@@ -432,6 +443,7 @@ async function addPayload(rawPayload) {
     els.copyButton.disabled = false;
     els.saveButton.disabled = false;
     setStatus("Plain QR captured");
+    stopCamera();
     updateUi();
     return;
   }
@@ -573,6 +585,8 @@ async function assembleTransfer() {
     els.saveButton.disabled = false;
     state.completed = true;
     setStatus("Complete");
+    // The transfer is finished; power the camera down until the user scans again.
+    stopCamera();
   } catch (error) {
     setStatus(error.message);
   } finally {
