@@ -126,18 +126,30 @@ var Bands = map[string]Band{
 	"ultrasonic-wide": {Name: "ultrasonic-wide", Base: 19000, Spacing: 50, SymbolSec: 0.020,
 		SyncSec: 0.080, GapSec: 0.040, Carriers: 32, PrefixSec: 0.012, SuffixSec: 0.002, Parity: 16},
 
-	// ultrawide fills the whole clean stretch of the measured response,
-	// 19.0-20.95 kHz with the sync tone at 21.0 kHz, and carries three bits per
-	// subcarrier instead of two. Below 19 kHz sits a deep null and above 21 kHz
-	// the 48 kHz reconstruction filter, so this is about as much of the band as
-	// there is to take.
+	// ultrawide takes the whole usable window and three bits per subcarrier.
 	//
-	// It buys speed by spending margin twice over: 8-PSK halves the angular
-	// distance between decision boundaries, and the shorter prefix leaves less
-	// guard against reflections. It wants a short, direct path, and the extra
-	// parity is there because forty subcarriers cross more nulls than sixteen.
+	// The upper edge is not the speaker's doing: a sweep shows output holding
+	// to within 6 dB at 21.8 kHz and then collapsing 27 dB by 22.0 kHz and
+	// 113 dB by 23.0 kHz. That cliff is the 48 kHz reconstruction filter, and
+	// nothing on this side of it can be used. Below 19 kHz sits a deep null
+	// around 18.75 kHz. So 19.0-21.8 kHz is all there is, and the sync tone at
+	// 21.6 kHz sits just inside it.
+	//
+	// It stops at 44 subcarriers rather than filling the window to the brim.
+	// Past that the margin falls off a cliff: at 48 the simulated near-field
+	// delivery drops from 7 frames in 7 to 4, and at 52 even a clean channel
+	// loses most of them. Two things bite at once — each extra subcarrier takes
+	// a share of a fixed power budget, and a higher crest factor drags the
+	// whole transmission down further when it is normalised away from clipping.
+	// 44 is the last count that still holds its margin.
+	//
+	// It buys speed by spending margin twice over besides: 8-PSK halves the
+	// angular distance between decision boundaries, and the prefix guards
+	// against less reverberation than the other parallel bands. It wants a
+	// short, direct path, and carries extra parity because forty-four
+	// subcarriers cross more nulls than sixteen.
 	"ultrawide": {Name: "ultrawide", Base: 19000, Spacing: 50, SymbolSec: 0.020,
-		SyncSec: 0.080, GapSec: 0.040, Carriers: 40, PrefixSec: 0.008, SuffixSec: 0.002,
+		SyncSec: 0.080, GapSec: 0.040, Carriers: 44, PrefixSec: 0.008, SuffixSec: 0.002,
 		Parity: 24, Phase: 3},
 }
 

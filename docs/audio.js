@@ -29,10 +29,12 @@
     syncSec: 0.08, gapSec: 0.04, carriers: 16, prefixSec: 0.012, suffixSec: 0.002, parity: 16 };
   Bands["ultrasonic-wide"] = { name: "ultrasonic-wide", base: 19000, spacing: 50, symbolSec: 0.02,
     syncSec: 0.08, gapSec: 0.04, carriers: 32, prefixSec: 0.012, suffixSec: 0.002, parity: 16 };
-  // ultrawide fills the whole clean stretch of the measured speaker response,
-  // 19.0-20.95 kHz, and carries three bits per subcarrier instead of two.
+  // ultrawide runs 19.0-21.15 kHz with its sync tone at 21.2 kHz and carries
+  // three bits per subcarrier instead of two. It stops short of the 21.8 kHz
+  // ceiling the 48 kHz reconstruction filter imposes, because margin per
+  // subcarrier collapses before the spectrum runs out.
   Bands["ultrawide"] = { name: "ultrawide", base: 19000, spacing: 50, symbolSec: 0.02,
-    syncSec: 0.08, gapSec: 0.04, carriers: 40, prefixSec: 0.008, suffixSec: 0.002,
+    syncSec: 0.08, gapSec: 0.04, carriers: 44, prefixSec: 0.008, suffixSec: 0.002,
     parity: 24, phase: 3 };
 
   const BandNames = ["fast", "audible", "ultrasonic", "audible-fast", "ultrasonic-fast", "ultrasonic-wide", "ultrawide"];

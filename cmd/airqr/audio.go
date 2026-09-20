@@ -207,8 +207,16 @@ func runAudioSend(args []string, o audioSendOpts) error {
 	fmt.Fprintf(os.Stderr, "AirQR audio: %s\n", name)
 	fmt.Fprintf(os.Stderr, "  %d bytes -> K=%d symbols of %d bytes, %d frames\n",
 		enc.OriginalSize, enc.K, enc.T, len(frames))
-	fmt.Fprintf(os.Stderr, "  band %s: tones %.0f-%.0f Hz, sync %.0f Hz, %.0f ms/symbol\n",
-		band.Name, band.ToneFreq(0), band.ToneFreq(audio.Tones-1), band.SyncFreq(), band.SymbolSec*1000)
+	// A parallel band's span is set by its subcarrier count, not by the 16-tone
+	// serial alphabet, and its symbol carries a cyclic prefix as well.
+	if band.Parallel() {
+		fmt.Fprintf(os.Stderr, "  band %s: %d subcarriers %.0f-%.0f Hz, sync %.0f Hz, %d bits each, %.0f ms/symbol\n",
+			band.Name, band.Carriers, band.CarrierFreq(0), band.CarrierFreq(band.Carriers-1),
+			band.SyncFreq(), band.PhaseBits(), band.BlockSec()*1000)
+	} else {
+		fmt.Fprintf(os.Stderr, "  band %s: tones %.0f-%.0f Hz, sync %.0f Hz, %.0f ms/symbol\n",
+			band.Name, band.ToneFreq(0), band.ToneFreq(audio.Tones-1), band.SyncFreq(), band.SymbolSec*1000)
+	}
 	fmt.Fprintf(os.Stderr, "  %.1fs at %d Hz (%.1f payload bytes/s)\n",
 		dur, sampleRate, float64(enc.OriginalSize)/dur)
 

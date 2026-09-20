@@ -111,7 +111,7 @@ frame — several times faster for the same spectrum.
 | `audible-fast` | 1.20–2.75 kHz | 32×QPSK | — | Audible, needs a short path |
 | `ultrasonic-fast` | 19.00–19.75 kHz | 16×QPSK | **~101 B/s** | Inaudible, survives a reverberant room |
 | `ultrasonic-wide` | 19.00–20.55 kHz | 32×QPSK | **~167 B/s** | Faster; wants a short, direct path |
-| `ultrawide` | 19.00–20.95 kHz | 40×8PSK | **~255 B/s** | Fastest; short, direct path only |
+| `ultrawide` | 19.00–21.15 kHz | 44×8PSK | **~258 B/s** | Fastest; short, direct path only |
 
 Figures are end to end through a MacBook Pro's speakers and microphone on a
 1,957-byte text file, so they include gzip, framing and parity.
@@ -127,16 +127,47 @@ sync tone. Both are comfortable at a 48 kHz capture rate but close to the
 anti-alias filter of a device recording at 44.1 kHz, so `ultrasonic-fast` is the
 safer default across unknown hardware.
 
-`ultrawide` takes what is left of the band. It fills the whole clean stretch of
-the measured response — below 19 kHz sits a deep null, above 21 kHz the 48 kHz
-reconstruction filter — and carries three bits per subcarrier instead of two.
-It buys that speed by spending margin twice: 8-PSK halves the angular distance
-between decision boundaries, and its 8 ms cyclic prefix leaves less guard
-against reflections than the 12 ms the other parallel bands use. Against a
-simulated room it recovers nothing, where `ultrasonic-fast` still recovers
-everything; over a short, direct path it delivered every frame. Treat it as the
+`ultrawide` is the end of the line, and it is worth knowing why. It carries
+three bits per subcarrier instead of two, and its 8 ms cyclic prefix leaves less
+guard against reflections than the 12 ms the other parallel bands use. Against
+a simulated room it recovers nothing, where `ultrasonic-fast` still recovers
+everything; over a short, direct path it delivers every frame. Treat it as the
 setting for a phone lying next to the laptop, and fall back a step if frames
 stop landing.
+
+### The ceiling
+
+Two separate limits stop this going further, and neither is the speaker.
+
+The first is a hard wall at **21.9 kHz**. A sweep shows output holding to within
+6 dB of peak at 21.8 kHz, then collapsing 27 dB by 22.0 kHz and 113 dB by
+23.0 kHz. That is the 48 kHz reconstruction filter, not the driver, and nothing
+below it can be recovered.
+
+The second binds sooner and is the more interesting one: **power per
+subcarrier**, not spectrum. Every extra subcarrier takes a share of one power
+budget, and a higher crest factor drags the whole transmission down again when
+it is normalised away from clipping. Sweeping the count against a simulated
+channel shows exactly where that stops paying:
+
+| carriers | top carrier | channel B/s | clean | near-field | desk |
+| --- | --- | --- | --- | --- | --- |
+| 32 | 20.55 kHz | 400 | 7/7 | 7/7 | 7/7 |
+| 40 | 20.95 kHz | 500 | 7/7 | 7/7 | 5/7 |
+| **44** | **21.15 kHz** | **550** | **7/7** | **7/7** | **4/7** |
+| 48 | 21.35 kHz | 600 | 7/7 | 4/7 | 1/7 |
+| 52 | 21.55 kHz | 650 | 3/7 | 1/7 | 0/7 |
+
+So `ultrawide` stops at 44 rather than filling the window. Over the air, 52
+subcarriers did finish 0.6 s sooner but delivered only 15 frames of 18 where 44
+delivered all 18 — and it fell apart in simulation. There is spectrum left
+above 21.15 kHz; there is no link budget left to put in it.
+
+Getting past either limit needs something outside the modem: a higher output
+sample rate to move the reconstruction filter (which only helps if the
+receiver also captures above 24 kHz — laptops do, phones generally do not), or
+a feedback channel so the sender could learn how much margin it actually has.
+A one-way acoustic link has neither.
 
 ### Why parallel is the only way to go faster
 
@@ -145,10 +176,10 @@ single extra bit — it was already within about 20% of its ceiling. Symbol time
 cannot simply be shortened either: a room's impulse response runs to tens of
 milliseconds, and symbols shorter than that smear into one another.
 
-Bandwidth runs out quickly too. The clean stretch of the measured response is
-roughly 19–21 kHz, so going from 32 subcarriers to 40 is only worth about 1.25×.
-Past that the remaining lever is bits per subcarrier, which is what `ultrawide`
-spends: 8-PSK instead of QPSK is worth 1.5× across every subcarrier at once.
+Bandwidth runs out quickly too, and not where you would expect — see
+[The ceiling](#the-ceiling). Past it the remaining lever is bits per subcarrier,
+which is what `ultrawide` spends: 8-PSK instead of QPSK is worth 1.5× across
+every subcarrier at once.
 
 Sending many subcarriers simultaneously sidesteps both limits. Symbol time stays
 long, so reverberation is no worse, while `2 × carriers` bits ride each symbol
