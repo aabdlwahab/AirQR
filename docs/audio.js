@@ -38,9 +38,10 @@
     parity: 24, phase: 3 };
 
   // ultrawide-max trades reverberation guard for speed: a 4 ms cyclic prefix
-  // instead of 8 ms. Only worth choosing with the devices practically touching.
+  // instead of 8 ms, over 48 subcarriers. Only worth choosing with the devices
+  // practically touching.
   Bands["ultrawide-max"] = { name: "ultrawide-max", base: 19000, spacing: 50, symbolSec: 0.02,
-    syncSec: 0.08, gapSec: 0.04, carriers: 40, prefixSec: 0.004, suffixSec: 0.002,
+    syncSec: 0.08, gapSec: 0.04, carriers: 48, prefixSec: 0.004, suffixSec: 0.002,
     parity: 24, phase: 3 };
 
   const BandNames = ["fast", "audible", "ultrasonic", "audible-fast", "ultrasonic-fast", "ultrasonic-wide", "ultrawide", "ultrawide-max"];
@@ -338,6 +339,10 @@
   // error landing on a neighbouring point costs one bit rather than several.
   // At two bits the mapping is its own inverse; at three it is not, so the
   // receiver uses this direction only.
+  // The framed size of a beacon: type, length, the 47-byte body and the CRC.
+  // It is the shortest frame sent, so it bounds a safe probe length.
+  const BEACON_FRAME_LEN = 2 + 47 + 2;
+
   const GRAY = {};
   (function buildGray() {
     for (const bits of [2, 3, 4]) {
@@ -450,10 +455,14 @@
     // locking onto the neighbouring symbol.
     const search = prefixN + Math.floor(0.002 * sr);
     const step = Math.max(1, Math.floor(prefixN / 4));
+    // Probe no further than the shortest frame reaches. A wide band packs a
+    // frame into very few symbols, and a fixed three-symbol probe would read
+    // past it into the gap and the next sync tone, aligning on noise.
+    const probeBlocks = Math.min(3, Math.max(1, blocksForBytes(band, 3 + BEACON_FRAME_LEN + (band.parity || 0))));
     let bestOff = -1;
     let bestMargin = -2;
     for (let off = dataStart - search; off <= dataStart + search; off += step) {
-      const probe = decodeAt(off, 3);
+      const probe = decodeAt(off, probeBlocks);
       if (probe && probe.margin > bestMargin) {
         bestMargin = probe.margin;
         bestOff = off;

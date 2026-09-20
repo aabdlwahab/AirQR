@@ -206,7 +206,20 @@ func modulateParallel(frames [][]byte, sampleRate int, b Band, amplitude float64
 	for _, frame := range frames {
 		emitTone(b.SyncFreq(), b.SyncSec)
 
-		phases := make([]float64, b.Carriers) // reference symbol: all zero
+		// Reference symbol. Its phases are arbitrary as far as the protocol is
+		// concerned — the receiver measures whatever arrives and differences
+		// the next symbol against it, so it never needs to know them.
+		//
+		// Starting them all at zero, though, lines every subcarrier up into one
+		// coherent spike. That spike sets the peak the whole transmission is
+		// then normalised against, so it costs real radiated power: measured at
+		// 180 subcarriers the crest factor was 24.9 dB. Newman phases spread
+		// the energy across the symbol instead, which lifts RMS for the same
+		// peak — free signal, on every band.
+		phases := make([]float64, b.Carriers)
+		for k := range phases {
+			phases[k] = math.Pi * float64(k*k) / float64(b.Carriers)
+		}
 		emitBlock(phases)
 
 		air := wrapFrame(frame, b.Parity)
@@ -408,9 +421,21 @@ func readFrameParallel(samples []float32, dataStart int, b Band, sr float64) (De
 	if step < 1 {
 		step = 1
 	}
+	// Probe no further than the shortest frame actually reaches. A wide band
+	// packs a frame into very few symbols — at 180 subcarriers a beacon is two
+	// — and a fixed three-symbol probe would read past the frame into the gap
+	// and the next sync tone, measuring its margin on noise and aligning to it.
+	probe := b.blocksForBytes(3 + beaconFrameLen + b.Parity)
+	if probe > 3 {
+		probe = 3
+	}
+	if probe < 1 {
+		probe = 1
+	}
+
 	bestOff, bestMargin := -1, -2.0
 	for off := dataStart - search; off <= dataStart+search; off += step {
-		_, margin, ok := decodeAt(off, 3)
+		_, margin, ok := decodeAt(off, probe)
 		if ok && margin > bestMargin {
 			bestMargin, bestOff = margin, off
 		}

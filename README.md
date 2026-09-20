@@ -112,10 +112,12 @@ frame — several times faster for the same spectrum.
 | `ultrasonic-fast` | 19.00–19.75 kHz | 16×QPSK | **~101 B/s** | Inaudible, survives a reverberant room |
 | `ultrasonic-wide` | 19.00–20.55 kHz | 32×QPSK | **~167 B/s** | Faster; wants a short, direct path |
 | `ultrawide` | 19.00–21.15 kHz | 44×8PSK | **~258 B/s** | Very fast; a desk apart |
-| `ultrawide-max` | 19.00–20.95 kHz | 40×8PSK | **~279 B/s** | Fastest there is; devices practically touching |
+| `ultrawide-max` | 19.00–21.35 kHz | 48×8PSK | **~477 B/s** | Fastest there is; devices practically touching |
 
-Figures are end to end through a MacBook Pro's speakers and microphone on a
-1,957-byte text file, so they include gzip, framing and parity.
+Figures are end to end through a MacBook Pro's speakers and microphone, on a
+10 KB text file, so they include gzip, framing and parity. Measure on something
+representative: on a very small transfer the fixed per-frame cost dominates and
+every band looks slower than it is.
 
 The ultrasonic bands sit at 19.0–20.6 kHz because that region measured as both
 the strongest part of a MacBook Pro's speaker response and the quietest part of
@@ -199,17 +201,48 @@ bits per subcarrier, symbol length and prefix. The frontier is sharp:
 
 | bits | carriers | symbol | prefix | channel B/s | clean/near/desk | |
 | --- | --- | --- | --- | --- | --- | --- |
-| 3 | 48 | 20 ms | 4 ms | 692 | 6/0/0 | fails |
-| 3 | 44 | 20 ms | 4 ms | 635 | 7/6/0 | fails near-field |
-| 3 | 40 | 20 ms | 4 ms | 577 | 7/7/0 | **`ultrawide-max`** |
-| 3 | 44 | 20 ms | 8 ms | 550 | 7/7/4 | **`ultrawide`** |
+| 3 | 48 | 20 ms | 4 ms | 692 | 7/7/0 | **`ultrawide-max`** |
+| 3 | 48 | 20 ms | 8 ms | 600 | 7/7/7 | |
+| 3 | 44 | 20 ms | 8 ms | 550 | 7/7/7 | **`ultrawide`** |
 | 2 | 100 | 40 ms | 8 ms | 500 | 7/7/7 | slower over the air |
+
+Those numbers moved once the reference symbol stopped starting every subcarrier
+at phase zero. Aligned that way they sum into a single coherent spike, and since
+the whole transmission is normalised against its peak, that spike was costing
+real radiated power — 24.9 dB of crest factor at 180 subcarriers. Newman phases
+spread it: crest fell to 13.3 dB and RMS rose by 6 dB at 40 subcarriers and
+nearly 12 dB at 180. The receiver needed no change at all, because differential
+decoding only ever looks at the *difference* between consecutive symbols and
+never at the reference's absolute phases. Every band got quieter-sounding and
+stronger at once, and `ultrawide-max` could afford 48 subcarriers where it
+previously managed 40.
 
 So `ultrawide-max` is the fastest configuration that still delivers, and it is
 fast only because it gives up reverberation guard entirely — 4 ms of cyclic
 prefix against `ultrawide`'s 8. Measured with the devices touching it delivered
-every frame and beat `ultrawide` by about 8%; against a simulated desk it
-recovers nothing at all. There is no faster setting that works.
+every frame; against a simulated desk it recovers nothing at all.
+
+### Why the audible band does not help
+
+The ultrasonic window is about 2.5 kHz wide. The audible band is four times
+that, the speakers are more efficient across it, and on paper it reaches several
+times the rate — a 200-subcarrier band at 1–11 kHz measures 2,152 payload bytes
+per second against `ultrawide-max`'s 477.
+
+It does not survive contact with a room. Delivery collapses to roughly a third
+of frames, because a band spanning 1–11 kHz crosses far more of the nulls that
+reflections comb into the response than a 2.5 kHz band does, and a frame dies on
+the first byte Reed-Solomon cannot repair. A narrower 1–8 kHz variant decoded
+once and then failed twice on repeat runs with the same file and the same
+placement. Raising redundancy to compensate gives the speed straight back.
+
+The honest ceiling is therefore not the spectrum but frame delivery. The fix is
+error correction that knows *which* subcarriers failed: the receiver already
+measures a per-subcarrier phase margin on every symbol and throws it away, and
+Reed-Solomon corrects twice as many erasures as errors. Marking the weakest
+subcarriers as erasures rather than letting them read as wrong bytes would
+roughly double the correction budget, which is what a wide band needs to hold
+together. That is the next thing worth building.
 
 ### Why parallel is the only way to go faster
 

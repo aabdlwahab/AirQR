@@ -152,18 +152,24 @@ var Bands = map[string]Band{
 	// sender-side lever and keeping the fastest setting that still delivered.
 	//
 	// It differs from ultrawide only in trading reverberation guard for speed:
-	// a 4 ms cyclic prefix instead of 8 ms, over 40 subcarriers instead of 44.
+	// a 4 ms cyclic prefix instead of 8 ms. Its 48 subcarriers are more than
+	// ultrawide's 44 because spreading the reference symbol's phases lifted the
+	// power budget enough to afford them — verified over the air at full
+	// delivery.
 	// Against a simulated desk it recovers nothing at all where ultrawide still
 	// recovers most frames, so it is only worth choosing when the two devices
 	// are practically touching — measured that way it delivered every frame and
 	// beat ultrawide by about 8%.
 	//
-	// Nothing faster survives. 44 subcarriers at a 4 ms prefix reaches 635 B/s
-	// on paper and fails near-field; 48 reaches 692 and fails outright. 16-PSK
-	// fails even on a clean channel — four bits per subcarrier leaves too little
-	// angular margin at any usable power.
+	// Nothing faster survives. Widening into the audible band reaches several
+	// times this rate on paper — the spectrum is there — but frame delivery
+	// collapses, because a band spanning 1-11 kHz crosses far more of the nulls
+	// reflections comb into the response than a 2.5 kHz one does. Measured, it
+	// delivered about a third of its frames and did not reproduce between runs.
+	// 16-PSK became viable on a clean path once the crest factor was fixed, but
+	// still will not hold a near-field channel.
 	"ultrawide-max": {Name: "ultrawide-max", Base: 19000, Spacing: 50, SymbolSec: 0.020,
-		SyncSec: 0.080, GapSec: 0.040, Carriers: 40, PrefixSec: 0.004, SuffixSec: 0.002,
+		SyncSec: 0.080, GapSec: 0.040, Carriers: 48, PrefixSec: 0.004, SuffixSec: 0.002,
 		Parity: 24, Phase: 3},
 
 	"ultrawide": {Name: "ultrawide", Base: 19000, Spacing: 50, SymbolSec: 0.020,
@@ -204,6 +210,11 @@ func (b Band) Validate(sampleRate int) error {
 	}
 	return nil
 }
+
+// beaconFrameLen is the framed size of a beacon: type, length, the 47-byte
+// body and the CRC. It is the shortest frame that goes out, so it bounds how
+// many symbols a receiver can safely probe before it knows what it is reading.
+const beaconFrameLen = 2 + 47 + 2
 
 // Frame types.
 const (
