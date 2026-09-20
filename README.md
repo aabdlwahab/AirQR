@@ -1,6 +1,7 @@
 # AirQR
 
-AirQR is a terminal tool for moving text across an air gap with QR codes.
+AirQR is a terminal tool for moving text across an air gap, as QR codes in the
+terminal or as sound from the speakers.
 
 It reads text from a file or standard input, compresses it when useful, splits it
 into ordered frames, and renders one or more QR codes in the terminal. Multi-part
@@ -14,6 +15,7 @@ go run ./cmd/airqr send message.txt
 go run ./cmd/airqr send < message.txt
 go run ./cmd/airqr inspect message.txt
 go run ./cmd/airqr decode frames.txt > message.txt
+go run ./cmd/airqr audio message.txt
 go run ./cmd/airqr web
 ```
 
@@ -67,6 +69,65 @@ trusts:
 ./airqr web --addr 0.0.0.0:8747 --tls-cert cert.pem --tls-key key.pem
 ```
 
+## Sound
+
+The same transfer can cross the gap as audio instead of QR codes. `airqr audio`
+modulates the AIRQR2 fountain symbols as 16-tone MFSK and plays them through a
+chosen output device, or writes a WAV:
+
+```sh
+airqr audio message.txt
+airqr audio --band ultrasonic message.txt
+airqr audio --out transfer.wav --no-play message.txt
+airqr audio --decode transfer.wav > message.txt
+```
+
+Pick the speaker with `--device`, by id or by any part of its name:
+
+```sh
+airqr audio --list-devices
+airqr audio --device "MacBook Pro" message.txt
+airqr audio --device 95 message.txt
+```
+
+`--list-devices` prints each device's sample rate and flags any that are too
+low for the upper bands. This matters more than it sounds: a virtual output
+(a loopback driver, a conferencing app) can sit at 8 or 16 kHz, and everything
+above its Nyquist limit is not attenuated but *absent*. The waveform is always
+generated at the chosen device's own rate so nothing resamples it on the way
+out.
+
+### Bands
+
+| Band | Tones | Symbol | Throughput | Notes |
+| --- | --- | --- | --- | --- |
+| `fast` | 1.50–4.50 kHz | 6 ms | ~53 B/s | Loudest and quickest; clearly audible |
+| `audible` | 1.20–2.70 kHz | 12 ms | ~29 B/s | Narrower, more forgiving |
+| `ultrasonic` | 19.00–19.75 kHz | 24 ms | ~15 B/s | Inaudible to most adults |
+
+The ultrasonic band sits at 19.0–19.8 kHz because that region measured as both
+the strongest part of a MacBook Pro's speaker response and the quietest part of
+the ambient spectrum — room noise up there is roughly 29 dB below the 1–4 kHz
+band, where speech, fans and keyboards live. It also stays clear of a deep null
+near 18.75 kHz. Note that dogs and cats hear it perfectly well.
+
+### Receiving
+
+The web app decodes audio at `audio.html`, linked from the scanner's settings
+sheet. Press **Listen** and it decodes continuously from the microphone,
+exactly as the camera scanner accumulates QR frames: it locks onto whichever
+band it hears, fills the fountain rank as frames land, and finishes the moment
+any K independent symbols have arrived — usually well before the sender has
+finished transmitting. Dropping in a WAV decodes it in one pass instead.
+
+The receiver disables echo cancellation, noise suppression and automatic gain
+control on the capture stream. All three default to on and all three are tuned
+for speech: the suppressor in particular treats a steady tone as noise and
+removes it.
+
+`airqr audio --decode` does the same job in the terminal, and tries every band
+that fits under the file's sample rate unless `--band` names one.
+
 ## Frame Format
 
 ### AIRQR2 — rateless fountain (default for multi-frame transfers)
@@ -94,6 +155,32 @@ sender emits fresh symbols forever rather than looping a fixed set. `flags`,
 `transfer-size` is the length of the (possibly gzipped) transfer bytes.
 
 Pass `--fountain=false` to fall back to the AIRQR1 chunking below.
+
+### Acoustic framing
+
+Over the air the AIRQR2 text payload above is replaced by a binary frame. The
+text form spends 104 characters of header on every frame — 64 of them the
+SHA-256 hex — which a QR absorbs but which would cost seconds per frame at
+acoustic rates. Instead the transfer metadata moves into a periodic beacon and
+the data frames carry almost nothing:
+
+```text
+beacon:  type(1) len(1) session(2) K(2) T(2) flags(1)
+         transfer-size(4) original-size(4) sha256(32) crc16(2)
+data:    type(1) len(1) session(2) esi(3) symbol(T) crc16(2)
+```
+
+A beacon precedes every eighth data frame, so a receiver that starts listening
+late does not wait long to learn `K` and `T`. Each block begins with its own
+sync tone one slot above the top data tone, so blocks are located independently
+and clock drift never accumulates across a transfer.
+
+Frames carry a CRC but no error correction. A frame either verifies and becomes
+a fountain symbol or it is discarded, which turns the channel's bit errors into
+the erasures the fountain code already handles — the sender simply emits more
+symbols than `K`. Adding Reed-Solomon inside the frame would recover frames
+that a single bad symbol currently costs, at the price of a second coding layer
+to keep matched between Go and JavaScript.
 
 ### AIRQR1 — fixed ordered chunks (legacy)
 

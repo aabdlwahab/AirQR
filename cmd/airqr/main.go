@@ -16,18 +16,20 @@ import (
 	"airqr/internal/terminal"
 )
 
-const usage = `AirQR moves text across air gaps with terminal QR codes.
+const usage = `AirQR moves text across air gaps with terminal QR codes or sound.
 
 Usage:
   airqr send [flags] [file]
   airqr inspect [flags] [file]
   airqr decode [file]
+  airqr audio [flags] [file]
   airqr web [flags]
 
 Commands:
   send      Render one QR or animate a multi-frame transfer
   inspect   Show transfer size and frame count without rendering
   decode    Reassemble AirQR frame payloads from lines of text
+  audio     Send a transfer as sound, or decode a WAV back to text
   web       Serve the browser scanner app
 `
 
@@ -45,6 +47,8 @@ func main() {
 		err = runInspect(os.Args[2:])
 	case "decode":
 		err = runDecode(os.Args[2:])
+	case "audio":
+		err = runAudio(os.Args[2:])
 	case "web":
 		err = runWeb(os.Args[2:])
 	case "-h", "--help", "help":
