@@ -383,7 +383,7 @@
       </section>
 
       <footer>
-        Sender: <code>airqr audio --band ultrasonic-fast message.txt</code> &nbsp;·&nbsp;
+        Sender: <code>airqr audio --band ultrawide message.txt</code> &nbsp;·&nbsp;
         differential QPSK on parallel subcarriers, Reed-Solomon, AIRQR2 fountain coding
       </footer>
     </div>
@@ -572,7 +572,9 @@
             const top = AirQRAudio.isParallel(b)
               ? AirQRAudio.carrierFreq(b, b.carriers - 1)
               : AirQRAudio.toneFreq(b, AirQRAudio.TONES - 1);
-            const mode = AirQRAudio.isParallel(b) ? `${b.carriers}×QPSK` : "MFSK";
+            const mode = AirQRAudio.isParallel(b)
+              ? `${b.carriers}×${(b.phase || 2) === 3 ? "8PSK" : "QPSK"}`
+              : "MFSK";
             tr.innerHTML =
               `<td>${t.band}</td>` +
               `<td>${(AirQRAudio.toneFreq(b, 0) / 1000).toFixed(2)}–${(top / 1000).toFixed(2)} kHz</td>` +

@@ -41,12 +41,51 @@ func (b Band) CarrierFreq(i int) float64 { return b.Base + float64(i)*b.Spacing 
 func (b Band) BlockSec() float64 { return b.PrefixSec + b.SymbolSec + b.SuffixSec }
 
 // BitsPerBlock is how many payload bits one parallel symbol carries.
-func (b Band) BitsPerBlock() int { return 2 * b.Carriers }
+func (b Band) BitsPerBlock() int { return b.PhaseBits() * b.Carriers }
 
-// gray maps a quadrant index to two bits and back; it is its own inverse. A
-// phase error large enough to land in an adjacent quadrant then costs one bit
-// rather than two.
-var gray = [4]int{0, 1, 3, 2}
+// Gray coding between data values and constellation indices, so a phase error
+// large enough to land in a neighbouring point costs one bit rather than
+// several.
+//
+// dataOf[q] is the value carried by constellation index q; phaseOf is its
+// inverse. For two bits the mapping happens to be its own inverse, which is no
+// longer true at three, so both directions are tabulated.
+var (
+	dataOf  = map[int][]int{}
+	phaseOf = map[int][]int{}
+)
+
+func init() {
+	for _, bits := range []int{2, 3} {
+		n := 1 << bits
+		d := make([]int, n)
+		p := make([]int, n)
+		for q := 0; q < n; q++ {
+			d[q] = q ^ (q >> 1)
+			p[d[q]] = q
+		}
+		dataOf[bits], phaseOf[bits] = d, p
+	}
+}
+
+// PhaseBits is how many bits each subcarrier carries per symbol: 2 for QPSK,
+// 3 for 8-PSK. Zero means the original QPSK.
+//
+// Going from 2 to 3 is the only lever left with real leverage. The usable
+// ultrasonic window on typical hardware runs about 19-21 kHz — below that sits
+// a deep null, above it the reconstruction filter — so widening the band alone
+// cannot do much more. Packing another bit onto every subcarrier is worth 1.5x
+// across the whole band at once, at the cost of halving the angular distance
+// between decision boundaries.
+func (b Band) PhaseBits() int {
+	if b.Phase == 0 {
+		return 2
+	}
+	return b.Phase
+}
+
+// Phases is the size of the constellation.
+func (b Band) Phases() int { return 1 << b.PhaseBits() }
 
 // validateParallel checks the orthogonality and alignment invariants the
 // receiver depends on.
@@ -172,19 +211,23 @@ func modulateParallel(frames [][]byte, sampleRate int, b Band, amplitude float64
 
 		air := wrapFrame(frame, b.Parity)
 		bits := bitsOf(air)
+		pb := b.PhaseBits()
+		step := 2 * math.Pi / float64(b.Phases())
+		enc := phaseOf[pb]
 		for blk := 0; blk < b.blocksForBytes(len(air)); blk++ {
 			for k := 0; k < b.Carriers; k++ {
-				pair := 2 * (blk*b.Carriers + k)
-				hi, lo := 0, 0
-				if pair < len(bits) {
-					hi = bits[pair]
+				base := pb * (blk*b.Carriers + k)
+				v := 0
+				for i := 0; i < pb; i++ {
+					v <<= 1
+					if base+i < len(bits) {
+						v |= bits[base+i]
+					}
 				}
-				if pair+1 < len(bits) {
-					lo = bits[pair+1]
-				}
-				// Advance this subcarrier's phase by the quadrant the two bits
-				// select. The receiver reads the advance, not the phase.
-				phases[k] += float64(gray[hi<<1|lo]) * math.Pi / 2
+				// Advance this subcarrier's phase by the constellation point
+				// the bits select. The receiver reads the advance, not the
+				// absolute phase.
+				phases[k] += float64(enc[v]) * step
 			}
 			emitBlock(phases)
 		}
@@ -305,6 +348,11 @@ func readFrameParallel(samples []float32, dataStart int, b Band, sr float64) (De
 
 	// decodeAt reads count data symbols starting from a given block boundary,
 	// returning the bits and how cleanly the phases landed in their quadrants.
+	pb := b.PhaseBits()
+	phases := b.Phases()
+	phaseStep := 2 * math.Pi / float64(phases)
+	dec := dataOf[pb]
+
 	decodeAt := func(off, count int) ([]int, float64, bool) {
 		if off < 0 || off+(count+1)*blockN > len(samples) {
 			return nil, 0, false
@@ -325,14 +373,18 @@ func readFrameParallel(samples []float32, dataStart int, b Band, sr float64) (De
 				// decode every quadrant backwards.
 				d := complexConj(cur[k]) * prev[k]
 				angle := math.Atan2(imag(d), real(d))
-				q := int(math.Round(angle/(math.Pi/2))) & 3
-				err := math.Abs(angle - float64(q)*math.Pi/2)
+				q := int(math.Round(angle/phaseStep)) & (phases - 1)
+				err := math.Abs(angle - float64(q)*phaseStep)
 				for err > math.Pi {
 					err = 2*math.Pi - err
 				}
-				margin += 1 - err/(math.Pi/4)
-				sym := gray[q]
-				bits = append(bits, sym>>1&1, sym&1)
+				// Normalised against the decision boundary, which is half a
+				// constellation step: 1.0 is dead centre, 0.0 is on the edge.
+				margin += 1 - err/(phaseStep/2)
+				v := dec[q]
+				for i := pb - 1; i >= 0; i-- {
+					bits = append(bits, v>>uint(i)&1)
+				}
 			}
 			prev = cur
 		}

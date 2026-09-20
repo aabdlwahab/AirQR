@@ -110,7 +110,8 @@ frame — several times faster for the same spectrum.
 | `ultrasonic` | 19.00–19.75 kHz | MFSK | ~27 B/s | Inaudible; the original, slowest option |
 | `audible-fast` | 1.20–2.75 kHz | 32×QPSK | — | Audible, needs a short path |
 | `ultrasonic-fast` | 19.00–19.75 kHz | 16×QPSK | **~101 B/s** | Inaudible, survives a reverberant room |
-| `ultrasonic-wide` | 19.00–20.55 kHz | 32×QPSK | **~167 B/s** | Fastest; wants a short, direct path |
+| `ultrasonic-wide` | 19.00–20.55 kHz | 32×QPSK | **~167 B/s** | Faster; wants a short, direct path |
+| `ultrawide` | 19.00–20.95 kHz | 40×8PSK | **~255 B/s** | Fastest; short, direct path only |
 
 Figures are end to end through a MacBook Pro's speakers and microphone on a
 1,957-byte text file, so they include gzip, framing and parity.
@@ -121,9 +122,21 @@ the ambient spectrum — room noise up there is roughly 29 dB below the 1–4 kH
 band, where speech, fans and keyboards live. It also stays clear of a deep null
 near 18.75 kHz. Note that dogs and cats hear it perfectly well.
 
-`ultrasonic-wide` reaches to 20.55 kHz. That is comfortable at a 48 kHz capture
-rate but close to the anti-alias filter of a device recording at 44.1 kHz, so
-`ultrasonic-fast` is the safer default across unknown hardware.
+`ultrasonic-wide` reaches to 20.55 kHz and `ultrawide` to 21.0 kHz including its
+sync tone. Both are comfortable at a 48 kHz capture rate but close to the
+anti-alias filter of a device recording at 44.1 kHz, so `ultrasonic-fast` is the
+safer default across unknown hardware.
+
+`ultrawide` takes what is left of the band. It fills the whole clean stretch of
+the measured response — below 19 kHz sits a deep null, above 21 kHz the 48 kHz
+reconstruction filter — and carries three bits per subcarrier instead of two.
+It buys that speed by spending margin twice: 8-PSK halves the angular distance
+between decision boundaries, and its 8 ms cyclic prefix leaves less guard
+against reflections than the 12 ms the other parallel bands use. Against a
+simulated room it recovers nothing, where `ultrasonic-fast` still recovers
+everything; over a short, direct path it delivered every frame. Treat it as the
+setting for a phone lying next to the laptop, and fall back a step if frames
+stop landing.
 
 ### Why parallel is the only way to go faster
 
@@ -131,6 +144,11 @@ Serial MFSK carries `log2(N)` bits per symbol, so doubling its bandwidth buys a
 single extra bit — it was already within about 20% of its ceiling. Symbol time
 cannot simply be shortened either: a room's impulse response runs to tens of
 milliseconds, and symbols shorter than that smear into one another.
+
+Bandwidth runs out quickly too. The clean stretch of the measured response is
+roughly 19–21 kHz, so going from 32 subcarriers to 40 is only worth about 1.25×.
+Past that the remaining lever is bits per subcarrier, which is what `ultrawide`
+spends: 8-PSK instead of QPSK is worth 1.5× across every subcarrier at once.
 
 Sending many subcarriers simultaneously sidesteps both limits. Symbol time stays
 long, so reverberation is no worse, while `2 × carriers` bits ride each symbol

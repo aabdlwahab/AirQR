@@ -55,6 +55,10 @@ type Band struct {
 	// correcting up to Parity/2 corrupt bytes. Zero leaves the frame protected
 	// by its CRC alone, which is the original wire format.
 	Parity int
+
+	// Phase is bits per subcarrier per symbol: 2 (QPSK) or 3 (8-PSK). Zero
+	// means 2.
+	Phase int
 }
 
 // wrapFrame prepares a frame for the air: a triplicated length byte, the frame,
@@ -121,11 +125,25 @@ var Bands = map[string]Band{
 		SyncSec: 0.080, GapSec: 0.040, Carriers: 16, PrefixSec: 0.012, SuffixSec: 0.002, Parity: 16},
 	"ultrasonic-wide": {Name: "ultrasonic-wide", Base: 19000, Spacing: 50, SymbolSec: 0.020,
 		SyncSec: 0.080, GapSec: 0.040, Carriers: 32, PrefixSec: 0.012, SuffixSec: 0.002, Parity: 16},
+
+	// ultrawide fills the whole clean stretch of the measured response,
+	// 19.0-20.95 kHz with the sync tone at 21.0 kHz, and carries three bits per
+	// subcarrier instead of two. Below 19 kHz sits a deep null and above 21 kHz
+	// the 48 kHz reconstruction filter, so this is about as much of the band as
+	// there is to take.
+	//
+	// It buys speed by spending margin twice over: 8-PSK halves the angular
+	// distance between decision boundaries, and the shorter prefix leaves less
+	// guard against reflections. It wants a short, direct path, and the extra
+	// parity is there because forty subcarriers cross more nulls than sixteen.
+	"ultrawide": {Name: "ultrawide", Base: 19000, Spacing: 50, SymbolSec: 0.020,
+		SyncSec: 0.080, GapSec: 0.040, Carriers: 40, PrefixSec: 0.008, SuffixSec: 0.002,
+		Parity: 24, Phase: 3},
 }
 
 // BandNames lists the presets in a stable order for help text and for the
 // receiver's band search.
-var BandNames = []string{"fast", "audible", "ultrasonic", "audible-fast", "ultrasonic-fast", "ultrasonic-wide"}
+var BandNames = []string{"fast", "audible", "ultrasonic", "audible-fast", "ultrasonic-fast", "ultrasonic-wide", "ultrawide"}
 
 // ToneFreq returns the carrier for symbol i.
 func (b Band) ToneFreq(i int) float64 { return b.Base + float64(i)*b.Spacing }

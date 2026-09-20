@@ -29,14 +29,22 @@
     syncSec: 0.08, gapSec: 0.04, carriers: 16, prefixSec: 0.012, suffixSec: 0.002, parity: 16 };
   Bands["ultrasonic-wide"] = { name: "ultrasonic-wide", base: 19000, spacing: 50, symbolSec: 0.02,
     syncSec: 0.08, gapSec: 0.04, carriers: 32, prefixSec: 0.012, suffixSec: 0.002, parity: 16 };
+  // ultrawide fills the whole clean stretch of the measured speaker response,
+  // 19.0-20.95 kHz, and carries three bits per subcarrier instead of two.
+  Bands["ultrawide"] = { name: "ultrawide", base: 19000, spacing: 50, symbolSec: 0.02,
+    syncSec: 0.08, gapSec: 0.04, carriers: 40, prefixSec: 0.008, suffixSec: 0.002,
+    parity: 24, phase: 3 };
 
-  const BandNames = ["fast", "audible", "ultrasonic", "audible-fast", "ultrasonic-fast", "ultrasonic-wide"];
+  const BandNames = ["fast", "audible", "ultrasonic", "audible-fast", "ultrasonic-fast", "ultrasonic-wide", "ultrawide"];
 
   const toneFreq = (band, i) => band.base + i * band.spacing;
   const isParallel = (band) => (band.carriers || 0) > 0;
   const carrierFreq = (band, i) => band.base + i * band.spacing;
   const blockSec = (band) => band.prefixSec + band.symbolSec + band.suffixSec;
-  const bitsPerBlock = (band) => 2 * band.carriers;
+  // Bits per subcarrier per symbol: 2 for QPSK, 3 for 8-PSK.
+  const phaseBits = (band) => band.phase || 2;
+  const phaseCount = (band) => 1 << phaseBits(band);
+  const bitsPerBlock = (band) => phaseBits(band) * band.carriers;
   const blocksForBytes = (band, n) => Math.ceil((n * 8) / bitsPerBlock(band));
   const syncFreq = (band) =>
     band.base + (isParallel(band) ? band.carriers : TONES) * band.spacing;
@@ -318,9 +326,19 @@
     return out;
   }
 
-  // gray maps a quadrant index to two bits and back; it is its own inverse, so
-  // a phase error landing in an adjacent quadrant costs one bit, not two.
-  const GRAY = [0, 1, 3, 2];
+  // GRAY[bits][q] is the value carried by constellation index q, so a phase
+  // error landing on a neighbouring point costs one bit rather than several.
+  // At two bits the mapping is its own inverse; at three it is not, so the
+  // receiver uses this direction only.
+  const GRAY = {};
+  (function buildGray() {
+    for (const bits of [2, 3]) {
+      const n = 1 << bits;
+      const d = new Int8Array(n);
+      for (let q = 0; q < n; q++) d[q] = q ^ (q >> 1);
+      GRAY[bits] = d;
+    }
+  })();
 
   // Correlator tables are the same for every symbol window, so build them once
   // per band and sample rate rather than calling trig inside the inner loop.
@@ -383,6 +401,11 @@
 
     // decodeAt reads count data symbols after the reference symbol, and reports
     // how cleanly the differential phases landed in their quadrants.
+    const pb = phaseBits(band);
+    const nPhases = phaseCount(band);
+    const phaseStep = (2 * Math.PI) / nPhases;
+    const dataOf = GRAY[pb];
+
     const decodeAt = (off, count) => {
       if (off < 0 || off + (count + 1) * blockN > samples.length) return null;
       let prev = carrierPhasors(samples, off, prefixN, band, sr);
@@ -398,13 +421,14 @@
           const re = cur.re[k] * prev.re[k] + cur.im[k] * prev.im[k];
           const im = -cur.im[k] * prev.re[k] + cur.re[k] * prev.im[k];
           const angle = Math.atan2(im, re);
-          const q = Math.round(angle / (Math.PI / 2)) & 3;
-          let err = Math.abs(angle - (q * Math.PI) / 2);
+          const q = Math.round(angle / phaseStep) & (nPhases - 1);
+          let err = Math.abs(angle - q * phaseStep);
           while (err > Math.PI) err = 2 * Math.PI - err;
-          margin += 1 - err / (Math.PI / 4);
-          const sym = GRAY[q];
-          bits[at++] = (sym >> 1) & 1;
-          bits[at++] = sym & 1;
+          // Normalised against the decision boundary, half a constellation
+          // step: 1.0 is dead centre, 0.0 is on the edge.
+          margin += 1 - err / (phaseStep / 2);
+          const v = dataOf[q];
+          for (let i = pb - 1; i >= 0; i--) bits[at++] = (v >> i) & 1;
         }
         prev = { re: cur.re.slice(), im: cur.im.slice() };
       }
