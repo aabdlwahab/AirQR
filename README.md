@@ -111,7 +111,8 @@ frame — several times faster for the same spectrum.
 | `audible-fast` | 1.20–2.75 kHz | 32×QPSK | — | Audible, needs a short path |
 | `ultrasonic-fast` | 19.00–19.75 kHz | 16×QPSK | **~101 B/s** | Inaudible, survives a reverberant room |
 | `ultrasonic-wide` | 19.00–20.55 kHz | 32×QPSK | **~167 B/s** | Faster; wants a short, direct path |
-| `ultrawide` | 19.00–21.15 kHz | 44×8PSK | **~258 B/s** | Fastest; short, direct path only |
+| `ultrawide` | 19.00–21.15 kHz | 44×8PSK | **~258 B/s** | Very fast; a desk apart |
+| `ultrawide-max` | 19.00–20.95 kHz | 40×8PSK | **~279 B/s** | Fastest there is; devices practically touching |
 
 Figures are end to end through a MacBook Pro's speakers and microphone on a
 1,957-byte text file, so they include gzip, framing and parity.
@@ -133,7 +134,8 @@ guard against reflections than the 12 ms the other parallel bands use. Against
 a simulated room it recovers nothing, where `ultrasonic-fast` still recovers
 everything; over a short, direct path it delivers every frame. Treat it as the
 setting for a phone lying next to the laptop, and fall back a step if frames
-stop landing.
+stop landing. `ultrawide-max` is the same idea pushed one notch further and
+wants the devices almost in contact.
 
 ### The ceiling
 
@@ -163,11 +165,51 @@ subcarriers did finish 0.6 s sooner but delivered only 15 frames of 18 where 44
 delivered all 18 — and it fell apart in simulation. There is spectrum left
 above 21.15 kHz; there is no link budget left to put in it.
 
-Getting past either limit needs something outside the modem: a higher output
-sample rate to move the reconstruction filter (which only helps if the
-receiver also captures above 24 kHz — laptops do, phones generally do not), or
-a feedback channel so the sender could learn how much margin it actually has.
-A one-way acoustic link has neither.
+Both were then tested rather than assumed, along with every other lever, and
+all of them are now closed:
+
+**A higher output sample rate does nothing.** The 21.9 kHz wall does not move.
+Driving the speakers at 96 kHz instead of 48 kHz puts the cliff in exactly the
+same place: 21.5 kHz holds to within 2 dB of peak, 22.0 kHz is 49 dB down, and
+everything above is *numerically zero* rather than merely quiet. 22.05 kHz is
+Nyquist for 44.1 kHz, which is the tell — the built-in microphone reports a
+96 kHz stream but is bandlimited internally and upsampled. The ceiling belongs
+to the receiver, not to the speakers or the converter, so no sender-side rate
+change can reach past it. A phone is no better.
+
+**16-PSK does not work.** Four bits per subcarrier fails even on a clean,
+attenuated path, never mind a room: the angular distance between decision
+boundaries is too small at any power the speakers can deliver.
+`TestSixteenPSKIsNotViable` pins that so it is not re-derived later.
+
+**Longer symbols amortise the prefix but cost more than they return.** A
+100-subcarrier QPSK band on a 40 ms symbol reaches 521 B/s with better
+reverberation tolerance than `ultrawide`, but over the air it came in *slower*
+(7.8 s against 7.6 s) and costs 3.3× as much to demodulate — 33 ms per second of
+audio against 10 — which matters to a phone decoding live.
+
+**A feedback channel is impossible by construction.** The receiver is on the far
+side of the gap, so nothing it measures can reach the sender. That is also why
+the receiver cannot usefully recommend a band: the recommendation has no way
+home. The sender has to carry enough margin for the worst path it will meet,
+which is what the band ladder and the Reed-Solomon parity are for.
+
+What remained was a sweep of every sender-side combination of subcarrier count,
+bits per subcarrier, symbol length and prefix. The frontier is sharp:
+
+| bits | carriers | symbol | prefix | channel B/s | clean/near/desk | |
+| --- | --- | --- | --- | --- | --- | --- |
+| 3 | 48 | 20 ms | 4 ms | 692 | 6/0/0 | fails |
+| 3 | 44 | 20 ms | 4 ms | 635 | 7/6/0 | fails near-field |
+| 3 | 40 | 20 ms | 4 ms | 577 | 7/7/0 | **`ultrawide-max`** |
+| 3 | 44 | 20 ms | 8 ms | 550 | 7/7/4 | **`ultrawide`** |
+| 2 | 100 | 40 ms | 8 ms | 500 | 7/7/7 | slower over the air |
+
+So `ultrawide-max` is the fastest configuration that still delivers, and it is
+fast only because it gives up reverberation guard entirely — 4 ms of cyclic
+prefix against `ultrawide`'s 8. Measured with the devices touching it delivered
+every frame and beat `ultrawide` by about 8%; against a simulated desk it
+recovers nothing at all. There is no faster setting that works.
 
 ### Why parallel is the only way to go faster
 

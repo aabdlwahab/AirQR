@@ -56,7 +56,7 @@ var (
 )
 
 func init() {
-	for _, bits := range []int{2, 3} {
+	for _, bits := range []int{2, 3, 4} {
 		n := 1 << bits
 		d := make([]int, n)
 		p := make([]int, n)
@@ -69,7 +69,7 @@ func init() {
 }
 
 // PhaseBits is how many bits each subcarrier carries per symbol: 2 for QPSK,
-// 3 for 8-PSK. Zero means the original QPSK.
+// 3 for 8-PSK, 4 for 16-PSK. Zero means the original QPSK.
 //
 // Going from 2 to 3 is the only lever left with real leverage. The usable
 // ultrasonic window on typical hardware runs about 19-21 kHz — below that sits

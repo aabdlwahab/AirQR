@@ -37,7 +37,13 @@
     syncSec: 0.08, gapSec: 0.04, carriers: 44, prefixSec: 0.008, suffixSec: 0.002,
     parity: 24, phase: 3 };
 
-  const BandNames = ["fast", "audible", "ultrasonic", "audible-fast", "ultrasonic-fast", "ultrasonic-wide", "ultrawide"];
+  // ultrawide-max trades reverberation guard for speed: a 4 ms cyclic prefix
+  // instead of 8 ms. Only worth choosing with the devices practically touching.
+  Bands["ultrawide-max"] = { name: "ultrawide-max", base: 19000, spacing: 50, symbolSec: 0.02,
+    syncSec: 0.08, gapSec: 0.04, carriers: 40, prefixSec: 0.004, suffixSec: 0.002,
+    parity: 24, phase: 3 };
+
+  const BandNames = ["fast", "audible", "ultrasonic", "audible-fast", "ultrasonic-fast", "ultrasonic-wide", "ultrawide", "ultrawide-max"];
 
   const toneFreq = (band, i) => band.base + i * band.spacing;
   const isParallel = (band) => (band.carriers || 0) > 0;
@@ -334,7 +340,7 @@
   // receiver uses this direction only.
   const GRAY = {};
   (function buildGray() {
-    for (const bits of [2, 3]) {
+    for (const bits of [2, 3, 4]) {
       const n = 1 << bits;
       const d = new Int8Array(n);
       for (let q = 0; q < n; q++) d[q] = q ^ (q >> 1);

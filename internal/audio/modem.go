@@ -148,6 +148,24 @@ var Bands = map[string]Band{
 	// against less reverberation than the other parallel bands. It wants a
 	// short, direct path, and carries extra parity because forty-four
 	// subcarriers cross more nulls than sixteen.
+	// ultrawide-max is the end of the road, found by sweeping every remaining
+	// sender-side lever and keeping the fastest setting that still delivered.
+	//
+	// It differs from ultrawide only in trading reverberation guard for speed:
+	// a 4 ms cyclic prefix instead of 8 ms, over 40 subcarriers instead of 44.
+	// Against a simulated desk it recovers nothing at all where ultrawide still
+	// recovers most frames, so it is only worth choosing when the two devices
+	// are practically touching — measured that way it delivered every frame and
+	// beat ultrawide by about 8%.
+	//
+	// Nothing faster survives. 44 subcarriers at a 4 ms prefix reaches 635 B/s
+	// on paper and fails near-field; 48 reaches 692 and fails outright. 16-PSK
+	// fails even on a clean channel — four bits per subcarrier leaves too little
+	// angular margin at any usable power.
+	"ultrawide-max": {Name: "ultrawide-max", Base: 19000, Spacing: 50, SymbolSec: 0.020,
+		SyncSec: 0.080, GapSec: 0.040, Carriers: 40, PrefixSec: 0.004, SuffixSec: 0.002,
+		Parity: 24, Phase: 3},
+
 	"ultrawide": {Name: "ultrawide", Base: 19000, Spacing: 50, SymbolSec: 0.020,
 		SyncSec: 0.080, GapSec: 0.040, Carriers: 44, PrefixSec: 0.008, SuffixSec: 0.002,
 		Parity: 24, Phase: 3},
@@ -155,7 +173,7 @@ var Bands = map[string]Band{
 
 // BandNames lists the presets in a stable order for help text and for the
 // receiver's band search.
-var BandNames = []string{"fast", "audible", "ultrasonic", "audible-fast", "ultrasonic-fast", "ultrasonic-wide", "ultrawide"}
+var BandNames = []string{"fast", "audible", "ultrasonic", "audible-fast", "ultrasonic-fast", "ultrasonic-wide", "ultrawide", "ultrawide-max"}
 
 // ToneFreq returns the carrier for symbol i.
 func (b Band) ToneFreq(i int) float64 { return b.Base + float64(i)*b.Spacing }

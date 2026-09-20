@@ -213,6 +213,10 @@ func TestParallelBandsSurviveEchoes(t *testing.T) {
 		// error correction of their own.
 		{"ultrasonic-wide", nearFieldEchoes, "near-field"},
 		{"audible-fast", nearFieldEchoes, "near-field"},
+		// ultrawide-max spends its reverberation guard on speed, so near-field
+		// is the most it is expected to hold. Anything more is a bonus, but a
+		// regression below this means the 4 ms prefix has stopped working.
+		{"ultrawide-max", nearFieldEchoes, "near-field"},
 	}
 
 	for _, c := range cases {
@@ -263,5 +267,30 @@ func TestParallelBeatsSerialInReverb(t *testing.T) {
 	t.Logf("room reverb: serial recovered %d frames, parallel recovered %d", serial, parallel)
 	if parallel <= serial {
 		t.Errorf("parallel (%d) should beat serial (%d) in reverb", parallel, serial)
+	}
+}
+
+// 16-PSK was measured and rejected: four bits per subcarrier leaves too little
+// angular margin to survive even a clean channel at usable power. This pins
+// that conclusion, so nobody re-derives it by shipping a broken band.
+func TestSixteenPSKIsNotViable(t *testing.T) {
+	band := Bands["ultrawide"]
+	band.Phase = 4
+	frames := testFrames(t, 6, 64)
+	wave, err := Modulate(frames, 48000, band, 0.5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A clean path, only attenuated — no echoes at all.
+	dirty := echoChannel(wave, 48000, nil, 0.05, 0.0015, 3)
+	ok := 0
+	for _, g := range Demodulate(dirty, 48000, band) {
+		if _, _, err := ParseFrame(g.Bytes); err == nil {
+			ok++
+		}
+	}
+	t.Logf("16-PSK on a clean, attenuated path: %d/%d frames", ok, len(frames))
+	if ok == len(frames) {
+		t.Errorf("16-PSK delivered everything; if that is now reliable, revisit the band table")
 	}
 }
