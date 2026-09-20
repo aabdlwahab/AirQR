@@ -38,11 +38,61 @@ const Tones = 16
 // plain non-coherent Goertzel.
 type Band struct {
 	Name      string
-	Base      float64 // frequency of tone 0, Hz
+	Base      float64 // frequency of tone 0 / subcarrier 0, Hz
 	Spacing   float64 // gap between adjacent tones, Hz
-	SymbolSec float64 // duration of one symbol
-	SyncSec   float64 // duration of the per-block sync tone
-	GapSec    float64 // silence after each block
+	SymbolSec float64 // serial: one symbol. parallel: the useful symbol window.
+	SyncSec   float64 // duration of the per-frame sync tone
+	GapSec    float64 // silence after each frame
+
+	// Carriers > 0 selects parallel mode: that many simultaneous
+	// differentially-keyed QPSK subcarriers instead of one tone at a time.
+	// See ofdm.go for why that is the only way to go substantially faster.
+	Carriers  int
+	PrefixSec float64 // cyclic prefix, absorbs early reflections
+	SuffixSec float64 // cyclic suffix, gives the taper somewhere to land
+
+	// Parity is how many Reed-Solomon parity bytes ride with each frame,
+	// correcting up to Parity/2 corrupt bytes. Zero leaves the frame protected
+	// by its CRC alone, which is the original wire format.
+	Parity int
+}
+
+// wrapFrame prepares a frame for the air: a triplicated length byte, the frame,
+// then Reed-Solomon parity over it.
+//
+// The length is sent three times because of a genuine ordering problem: the
+// receiver must know how many bytes to read before it can run the correction
+// that would have fixed a corrupt length byte. Three copies land on different
+// subcarriers, so a single dead one is outvoted.
+func wrapFrame(frame []byte, parity int) []byte {
+	if parity <= 0 {
+		return frame
+	}
+	out := make([]byte, 0, 3+len(frame)+parity)
+	l := byte(len(frame))
+	out = append(out, l, l, l)
+	out = append(out, frame...)
+	return append(out, RSEncode(frame, parity)...)
+}
+
+// majority returns the value at least two of three agree on.
+func majority(a, b, c byte) byte {
+	if a == b || a == c {
+		return a
+	}
+	if b == c {
+		return b
+	}
+	return a
+}
+
+// maxFrameLen is the largest frame that still leaves room for parity inside a
+// 255-byte Reed-Solomon codeword.
+func maxFrameLen(parity int) int {
+	if parity <= 0 {
+		return 255
+	}
+	return 255 - parity
 }
 
 // Bands are the presets offered on the command line. The ultrasonic band sits
@@ -53,10 +103,29 @@ var Bands = map[string]Band{
 	"fast":       {Name: "fast", Base: 1500, Spacing: 200, SymbolSec: 0.006, SyncSec: 0.060, GapSec: 0.040},
 	"audible":    {Name: "audible", Base: 1200, Spacing: 100, SymbolSec: 0.012, SyncSec: 0.060, GapSec: 0.040},
 	"ultrasonic": {Name: "ultrasonic", Base: 19000, Spacing: 50, SymbolSec: 0.024, SyncSec: 0.080, GapSec: 0.040},
+
+	// Parallel bands occupy the same spectrum as their serial namesake but
+	// carry 2 bits on each of many subcarriers at once, so they run several
+	// times faster at the same symbol time.
+	//
+	// The 12 ms cyclic prefix is the one number worth understanding. It has to
+	// outlast the room's longest significant reflection, because anything
+	// arriving later smears one symbol into the next. Measured against a
+	// simulated channel, a 4 ms prefix loses every frame once a 13 ms echo is
+	// present while a 12 ms prefix recovers all of them, and the extra guard
+	// costs only about a quarter of the throughput. 12 ms corresponds to a
+	// path difference of roughly four metres, which covers an ordinary room.
+	"audible-fast": {Name: "audible-fast", Base: 1200, Spacing: 50, SymbolSec: 0.020,
+		SyncSec: 0.060, GapSec: 0.040, Carriers: 32, PrefixSec: 0.012, SuffixSec: 0.002, Parity: 16},
+	"ultrasonic-fast": {Name: "ultrasonic-fast", Base: 19000, Spacing: 50, SymbolSec: 0.020,
+		SyncSec: 0.080, GapSec: 0.040, Carriers: 16, PrefixSec: 0.012, SuffixSec: 0.002, Parity: 16},
+	"ultrasonic-wide": {Name: "ultrasonic-wide", Base: 19000, Spacing: 50, SymbolSec: 0.020,
+		SyncSec: 0.080, GapSec: 0.040, Carriers: 32, PrefixSec: 0.012, SuffixSec: 0.002, Parity: 16},
 }
 
-// BandNames lists the presets in a stable order for help text.
-var BandNames = []string{"fast", "audible", "ultrasonic"}
+// BandNames lists the presets in a stable order for help text and for the
+// receiver's band search.
+var BandNames = []string{"fast", "audible", "ultrasonic", "audible-fast", "ultrasonic-fast", "ultrasonic-wide"}
 
 // ToneFreq returns the carrier for symbol i.
 func (b Band) ToneFreq(i int) float64 { return b.Base + float64(i)*b.Spacing }
@@ -64,11 +133,19 @@ func (b Band) ToneFreq(i int) float64 { return b.Base + float64(i)*b.Spacing }
 // SyncFreq sits one slot above the top data tone, so it can never be confused
 // with a data symbol and still lands inside the band the speaker reproduces
 // well.
-func (b Band) SyncFreq() float64 { return b.Base + float64(Tones)*b.Spacing }
+func (b Band) SyncFreq() float64 {
+	if b.Parallel() {
+		return b.Base + float64(b.Carriers)*b.Spacing
+	}
+	return b.Base + float64(Tones)*b.Spacing
+}
 
 // Validate reports whether the band's tones stay orthogonal and fit below
 // Nyquist at the given sample rate.
 func (b Band) Validate(sampleRate int) error {
+	if b.Parallel() {
+		return b.validateParallel(sampleRate)
+	}
 	if b.Spacing*b.SymbolSec < 0.999 {
 		return fmt.Errorf("band %s: spacing %.0f Hz is too narrow for a %.0f ms symbol (need >= %.0f Hz)",
 			b.Name, b.Spacing, b.SymbolSec*1000, 1/b.SymbolSec)
@@ -217,6 +294,9 @@ func nibbles(data []byte) []int {
 // boundaries so the tone changes are continuous and produce no click; the only
 // shaping needed is a short fade where a block meets silence.
 func Modulate(frames [][]byte, sampleRate int, b Band, amplitude float64) ([]float32, error) {
+	if b.Parallel() {
+		return modulateParallel(frames, sampleRate, b, amplitude)
+	}
 	if err := b.Validate(sampleRate); err != nil {
 		return nil, err
 	}
@@ -242,7 +322,7 @@ func Modulate(frames [][]byte, sampleRate int, b Band, amplitude float64) ([]flo
 	for _, frame := range frames {
 		start := len(out)
 		emit(b.SyncFreq(), b.SyncSec)
-		for _, n := range nibbles(frame) {
+		for _, n := range nibbles(wrapFrame(frame, b.Parity)) {
 			emit(b.ToneFreq(n), b.SymbolSec)
 		}
 		// Ramp the block's edges so the transitions to and from silence do not

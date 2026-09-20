@@ -77,7 +77,7 @@ chosen output device, or writes a WAV:
 
 ```sh
 airqr audio message.txt
-airqr audio --band ultrasonic message.txt
+airqr audio --band ultrasonic-fast message.txt
 airqr audio --out transfer.wav --no-play message.txt
 airqr audio --decode transfer.wav > message.txt
 ```
@@ -99,17 +99,63 @@ out.
 
 ### Bands
 
-| Band | Tones | Symbol | Throughput | Notes |
-| --- | --- | --- | --- | --- |
-| `fast` | 1.50–4.50 kHz | 6 ms | ~53 B/s | Loudest and quickest; clearly audible |
-| `audible` | 1.20–2.70 kHz | 12 ms | ~29 B/s | Narrower, more forgiving |
-| `ultrasonic` | 19.00–19.75 kHz | 24 ms | ~15 B/s | Inaudible to most adults |
+Serial bands send one tone at a time (16-tone MFSK). Parallel bands send two
+bits on each of many subcarriers at once, with Reed-Solomon protecting every
+frame — several times faster for the same spectrum.
 
-The ultrasonic band sits at 19.0–19.8 kHz because that region measured as both
+| Band | Spectrum | Mode | Measured over the air | Notes |
+| --- | --- | --- | --- | --- |
+| `fast` | 1.50–4.50 kHz | MFSK | ~98 B/s | Loudest and quickest; clearly audible |
+| `audible` | 1.20–2.70 kHz | MFSK | ~52 B/s | Narrower, more forgiving |
+| `ultrasonic` | 19.00–19.75 kHz | MFSK | ~27 B/s | Inaudible; the original, slowest option |
+| `audible-fast` | 1.20–2.75 kHz | 32×QPSK | — | Audible, needs a short path |
+| `ultrasonic-fast` | 19.00–19.75 kHz | 16×QPSK | **~101 B/s** | Inaudible, survives a reverberant room |
+| `ultrasonic-wide` | 19.00–20.55 kHz | 32×QPSK | **~167 B/s** | Fastest; wants a short, direct path |
+
+Figures are end to end through a MacBook Pro's speakers and microphone on a
+1,957-byte text file, so they include gzip, framing and parity.
+
+The ultrasonic bands sit at 19.0–20.6 kHz because that region measured as both
 the strongest part of a MacBook Pro's speaker response and the quietest part of
 the ambient spectrum — room noise up there is roughly 29 dB below the 1–4 kHz
 band, where speech, fans and keyboards live. It also stays clear of a deep null
 near 18.75 kHz. Note that dogs and cats hear it perfectly well.
+
+`ultrasonic-wide` reaches to 20.55 kHz. That is comfortable at a 48 kHz capture
+rate but close to the anti-alias filter of a device recording at 44.1 kHz, so
+`ultrasonic-fast` is the safer default across unknown hardware.
+
+### Why parallel is the only way to go faster
+
+Serial MFSK carries `log2(N)` bits per symbol, so doubling its bandwidth buys a
+single extra bit — it was already within about 20% of its ceiling. Symbol time
+cannot simply be shortened either: a room's impulse response runs to tens of
+milliseconds, and symbols shorter than that smear into one another.
+
+Sending many subcarriers simultaneously sidesteps both limits. Symbol time stays
+long, so reverberation is no worse, while `2 × carriers` bits ride each symbol
+instead of `log2(N)`.
+
+Three choices keep the receiver free of any channel estimator:
+
+- Every subcarrier is an integer multiple of `1/symbol`, so the cyclic prefix is
+  an exact continuation of the symbol and early reflections land in the guard
+  rather than in the data. The 12 ms prefix is sized to outlast a room's
+  significant reflections; against a simulated channel a 4 ms prefix loses every
+  frame once a 13 ms echo is present, while 12 ms recovers all of them.
+- Bits live in each subcarrier's phase *change* between consecutive symbols,
+  never its absolute phase. The speaker response ripples by 17 dB across the
+  band, but each subcarrier is compared only against itself one symbol earlier,
+  so the channel cancels instead of having to be measured.
+- Frames carry Reed-Solomon parity. Over the air, roughly half of all frames
+  failed their CRC despite high phase quality, because a few subcarriers sit in
+  nulls that reflections comb into the response. Correction turned that into a
+  clean decode: the same recording went from 0 beacons and 8 usable frames to
+  3 beacons and 17.
+
+The parallel bands are also *more* reverb-tolerant than the serial one, not
+less. Serial MFSK has no guard interval at all, so the same echoes that the
+cyclic prefix absorbs smear its symbols together.
 
 ### Receiving
 
@@ -175,12 +221,22 @@ late does not wait long to learn `K` and `T`. Each block begins with its own
 sync tone one slot above the top data tone, so blocks are located independently
 and clock drift never accumulates across a transfer.
 
-Frames carry a CRC but no error correction. A frame either verifies and becomes
-a fountain symbol or it is discarded, which turns the channel's bit errors into
-the erasures the fountain code already handles — the sender simply emits more
-symbols than `K`. Adding Reed-Solomon inside the frame would recover frames
-that a single bad symbol currently costs, at the price of a second coding layer
-to keep matched between Go and JavaScript.
+On the serial bands a frame carries a CRC and nothing else: it either verifies
+and becomes a fountain symbol or it is discarded, which turns the channel's bit
+errors into the erasures the fountain code already handles.
+
+The parallel bands add Reed-Solomon parity, because CRC-only was not enough once
+measured over the air. Each frame goes out as a triplicated length byte, the
+frame, then its parity:
+
+```text
+[len][len][len] [type][len][body][crc16] [rs parity]
+```
+
+The length is sent three times to break a genuine ordering problem — the
+receiver has to know how many bytes to read before it can run the correction
+that would have repaired a corrupt length byte. The three copies land on
+different subcarriers, so a single dead one is outvoted.
 
 ### AIRQR1 — fixed ordered chunks (legacy)
 

@@ -355,7 +355,7 @@
         <div style="overflow-x:auto">
           <table>
             <thead>
-              <tr><th>Band</th><th>Tones</th><th>Status</th><th>Beacons</th><th>Frames</th></tr>
+              <tr><th>Band</th><th>Spectrum</th><th>Mode</th><th>Status</th><th>Beacons</th><th>Frames</th></tr>
             </thead>
             <tbody id="bandRows"></tbody>
           </table>
@@ -383,8 +383,8 @@
       </section>
 
       <footer>
-        Sender: <code>airqr audio --band ultrasonic message.txt</code> &nbsp;·&nbsp;
-        16-tone MFSK over AIRQR2 fountain coding
+        Sender: <code>airqr audio --band ultrasonic-fast message.txt</code> &nbsp;·&nbsp;
+        differential QPSK on parallel subcarriers, Reed-Solomon, AIRQR2 fountain coding
       </footer>
     </div>
     <script src="fountain.js"></script>
@@ -567,9 +567,16 @@
               : t.beacons + t.data > 0
                 ? '<span class="chip ok">signal</span>'
                 : '<span class="chip no">silent</span>';
+            // A parallel band's top carrier is set by its subcarrier count,
+            // not by the 16-tone serial alphabet.
+            const top = AirQRAudio.isParallel(b)
+              ? AirQRAudio.carrierFreq(b, b.carriers - 1)
+              : AirQRAudio.toneFreq(b, AirQRAudio.TONES - 1);
+            const mode = AirQRAudio.isParallel(b) ? `${b.carriers}×QPSK` : "MFSK";
             tr.innerHTML =
               `<td>${t.band}</td>` +
-              `<td>${(AirQRAudio.toneFreq(b, 0) / 1000).toFixed(2)}–${(AirQRAudio.toneFreq(b, 15) / 1000).toFixed(2)} kHz</td>` +
+              `<td>${(AirQRAudio.toneFreq(b, 0) / 1000).toFixed(2)}–${(top / 1000).toFixed(2)} kHz</td>` +
+              `<td>${mode}</td>` +
               `<td>${status}</td><td>${t.beacons}</td><td>${t.data}</td>`;
             rows.appendChild(tr);
           }

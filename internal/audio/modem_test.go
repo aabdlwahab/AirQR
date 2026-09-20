@@ -166,3 +166,102 @@ func TestWAVRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// echoChannel models an acoustic path: a dominant direct arrival plus discrete
+// reflections, then attenuation and noise. The reflections matter twice over —
+// they are what makes the frequency response ripple, and any arriving later
+// than the cyclic prefix smear one symbol into the next.
+func echoChannel(in []float32, sampleRate int, echoes [][2]float64, gain, noise float64, seed int64) []float32 {
+	rng := rand.New(rand.NewSource(seed))
+	out := make([]float32, len(in))
+	for i, s := range in {
+		out[i] += float32(float64(s) * gain)
+		for _, e := range echoes {
+			d := int(e[0] * float64(sampleRate))
+			if i+d < len(out) {
+				out[i+d] += float32(float64(s) * gain * e[1])
+			}
+		}
+	}
+	for i := range out {
+		out[i] += float32(rng.NormFloat64() * noise)
+	}
+	return out
+}
+
+// Channels used to characterise the bands. Delays are seconds, amplitudes are
+// relative to the direct arrival.
+var (
+	nearFieldEchoes = [][2]float64{{0.002, 0.40}}
+	roomEchoes      = [][2]float64{{0.003, 0.40}, {0.007, 0.25}, {0.013, 0.15}}
+)
+
+func TestParallelBandsSurviveEchoes(t *testing.T) {
+	cases := []struct {
+		band    string
+		echoes  [][2]float64
+		channel string
+	}{
+		// 16 subcarriers in 800 Hz clears a reverberant room outright. Its
+		// cyclic prefix swallows the reflections, which is more than the serial
+		// band manages: serial MFSK has no guard interval, so the same 13 ms
+		// echo smears its symbols together and it loses most frames.
+		{"ultrasonic-fast", roomEchoes, "room"},
+		// 32 subcarriers spread over 1600 Hz cross more of the nulls that
+		// echoes comb into the response, and a single dead subcarrier fails the
+		// frame's CRC. They need a short, direct path until the frames carry
+		// error correction of their own.
+		{"ultrasonic-wide", nearFieldEchoes, "near-field"},
+		{"audible-fast", nearFieldEchoes, "near-field"},
+	}
+
+	for _, c := range cases {
+		band := Bands[c.band]
+		t.Run(c.band, func(t *testing.T) {
+			frames := testFrames(t, 6, 64)
+			wave, err := Modulate(frames, 48000, band, 0.5)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dirty := echoChannel(wave, 48000, c.echoes, 0.05, 0.0015, 3)
+			ok := 0
+			for _, g := range Demodulate(dirty, 48000, band) {
+				if _, _, err := ParseFrame(g.Bytes); err == nil {
+					ok++
+				}
+			}
+			t.Logf("%s over a %s channel at 26 dB attenuation: %d/%d frames, %.0f B/s",
+				c.band, c.channel, ok, len(frames),
+				float64(band.BitsPerBlock())/band.BlockSec()/8)
+			if ok != len(frames) {
+				t.Errorf("%d of %d frames survived", ok, len(frames))
+			}
+		})
+	}
+}
+
+// The parallel band should beat the serial one on reverb, not merely tie it.
+// If this ever regresses, the cyclic prefix has stopped doing its job.
+func TestParallelBeatsSerialInReverb(t *testing.T) {
+	count := func(name string) int {
+		band := Bands[name]
+		frames := testFrames(t, 6, 64)
+		wave, err := Modulate(frames, 48000, band, 0.5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dirty := echoChannel(wave, 48000, roomEchoes, 0.05, 0.0015, 3)
+		ok := 0
+		for _, g := range Demodulate(dirty, 48000, band) {
+			if _, _, err := ParseFrame(g.Bytes); err == nil {
+				ok++
+			}
+		}
+		return ok
+	}
+	serial, parallel := count("ultrasonic"), count("ultrasonic-fast")
+	t.Logf("room reverb: serial recovered %d frames, parallel recovered %d", serial, parallel)
+	if parallel <= serial {
+		t.Errorf("parallel (%d) should beat serial (%d) in reverb", parallel, serial)
+	}
+}

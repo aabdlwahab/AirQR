@@ -20,10 +20,26 @@
     audible: { name: "audible", base: 1200, spacing: 100, symbolSec: 0.012, syncSec: 0.06, gapSec: 0.04 },
     ultrasonic: { name: "ultrasonic", base: 19000, spacing: 50, symbolSec: 0.024, syncSec: 0.08, gapSec: 0.04 },
   };
-  const BandNames = ["fast", "audible", "ultrasonic"];
+  // Parallel bands: 2 bits on each of many subcarriers at once. The 12 ms
+  // cyclic prefix has to outlast the room's longest significant reflection —
+  // anything later smears one symbol into the next.
+  Bands["audible-fast"] = { name: "audible-fast", base: 1200, spacing: 50, symbolSec: 0.02,
+    syncSec: 0.06, gapSec: 0.04, carriers: 32, prefixSec: 0.012, suffixSec: 0.002, parity: 16 };
+  Bands["ultrasonic-fast"] = { name: "ultrasonic-fast", base: 19000, spacing: 50, symbolSec: 0.02,
+    syncSec: 0.08, gapSec: 0.04, carriers: 16, prefixSec: 0.012, suffixSec: 0.002, parity: 16 };
+  Bands["ultrasonic-wide"] = { name: "ultrasonic-wide", base: 19000, spacing: 50, symbolSec: 0.02,
+    syncSec: 0.08, gapSec: 0.04, carriers: 32, prefixSec: 0.012, suffixSec: 0.002, parity: 16 };
+
+  const BandNames = ["fast", "audible", "ultrasonic", "audible-fast", "ultrasonic-fast", "ultrasonic-wide"];
 
   const toneFreq = (band, i) => band.base + i * band.spacing;
-  const syncFreq = (band) => band.base + TONES * band.spacing;
+  const isParallel = (band) => (band.carriers || 0) > 0;
+  const carrierFreq = (band, i) => band.base + i * band.spacing;
+  const blockSec = (band) => band.prefixSec + band.symbolSec + band.suffixSec;
+  const bitsPerBlock = (band) => 2 * band.carriers;
+  const blocksForBytes = (band, n) => Math.ceil((n * 8) / bitsPerBlock(band));
+  const syncFreq = (band) =>
+    band.base + (isParallel(band) ? band.carriers : TONES) * band.spacing;
 
   // bandFits reports whether every tone stays below Nyquist. A file captured
   // through a voice-optimised path is often resampled to 16 kHz or lower,
@@ -31,6 +47,142 @@
   function bandFits(band, sampleRate) {
     return syncFreq(band) < sampleRate / 2;
   }
+
+  // Reed-Solomon over GF(256), mirroring internal/audio/rs.go.
+  //
+  // Measured over the air, about half of all frames failed their CRC even
+  // though the differential phases were landing well inside their quadrants:
+  // a few subcarriers sit in nulls that reflections comb into the response and
+  // corrupt a byte or two out of seventy. Without correction those frames are
+  // worth nothing. Errors arrive in whole bytes here, which is the shape
+  // Reed-Solomon handles best.
+  const rsExp = new Uint8Array(512);
+  const rsLog = new Uint8Array(256);
+  (function buildRS() {
+    let x = 1;
+    for (let i = 0; i < 255; i++) {
+      rsExp[i] = x;
+      rsLog[x] = i;
+      x <<= 1;
+      if (x & 0x100) x ^= 0x11d;
+    }
+    for (let i = 255; i < 512; i++) rsExp[i] = rsExp[i - 255];
+  })();
+
+  const rsMul = (a, b) => (a === 0 || b === 0 ? 0 : rsExp[rsLog[a] + rsLog[b]]);
+  const rsInv = (a) => rsExp[255 - rsLog[a]];
+  const rsDiv = (a, b) => (a === 0 ? 0 : rsExp[(rsLog[a] - rsLog[b] + 255) % 255]);
+  const rsPow = (a, n) => {
+    if (a === 0) return 0;
+    let e = (rsLog[a] * n) % 255;
+    if (e < 0) e += 255;
+    return rsExp[e];
+  };
+
+  // Ascending order throughout: p[i] is the coefficient of x^i.
+  function rsPolyMulAsc(p, q) {
+    const out = new Uint8Array(p.length + q.length - 1);
+    for (let i = 0; i < p.length; i++) {
+      if (p[i] === 0) continue;
+      for (let j = 0; j < q.length; j++) out[i + j] ^= rsMul(p[i], q[j]);
+    }
+    return out;
+  }
+
+  function rsPolyEvalAsc(p, x) {
+    let y = 0;
+    for (let i = p.length - 1; i >= 0; i--) y = rsMul(y, x) ^ p[i];
+    return y;
+  }
+
+  // rsDecode corrects up to nsym/2 byte errors in data followed by nsym parity
+  // bytes, or returns null.
+  function rsDecode(code, nsym) {
+    if (nsym <= 0 || code.length <= nsym || code.length > 255) return null;
+    const work = Uint8Array.from(code);
+    const n = work.length;
+
+    const synd = new Uint8Array(nsym);
+    let clean = true;
+    for (let j = 0; j < nsym; j++) {
+      let v = 0;
+      for (let i = 0; i < n; i++) v = rsMul(v, rsExp[j]) ^ work[i];
+      synd[j] = v;
+      if (v !== 0) clean = false;
+    }
+    if (clean) return work.subarray(0, n - nsym);
+
+    // Berlekamp-Massey.
+    let lam = [1];
+    let b = [1];
+    let L = 0;
+    let m = 1;
+    let bb = 1;
+    for (let i = 0; i < nsym; i++) {
+      let d = synd[i];
+      for (let k = 1; k <= L && k < lam.length; k++) d ^= rsMul(lam[k], synd[i - k]);
+      if (d === 0) {
+        m++;
+      } else if (2 * L <= i) {
+        const t = lam.slice();
+        const scale = rsDiv(d, bb);
+        while (lam.length < b.length + m) lam.push(0);
+        for (let k = 0; k < b.length; k++) lam[k + m] ^= rsMul(scale, b[k]);
+        L = i + 1 - L;
+        b = t;
+        bb = d;
+        m = 1;
+      } else {
+        const scale = rsDiv(d, bb);
+        while (lam.length < b.length + m) lam.push(0);
+        for (let k = 0; k < b.length; k++) lam[k + m] ^= rsMul(scale, b[k]);
+        m++;
+      }
+    }
+    if (L <= 0 || 2 * L > nsym) return null;
+    lam = lam.slice(0, L + 1);
+
+    // Chien search.
+    const positions = [];
+    const locators = [];
+    for (let e = 0; e < n; e++) {
+      if (rsPolyEvalAsc(lam, rsInv(rsPow(2, e))) === 0) {
+        positions.push(n - 1 - e);
+        locators.push(rsPow(2, e));
+      }
+    }
+    if (positions.length !== L) return null;
+
+    // Forney, using the product form so no formal derivative is needed.
+    let omega = rsPolyMulAsc(synd, Uint8Array.from(lam));
+    if (omega.length > nsym) omega = omega.subarray(0, nsym);
+    for (let i = 0; i < positions.length; i++) {
+      const xi = locators[i];
+      const xiInv = rsInv(xi);
+      let den = 1;
+      for (let j = 0; j < locators.length; j++) {
+        if (j !== i) den = rsMul(den, 1 ^ rsMul(locators[j], xiInv));
+      }
+      if (den === 0) return null;
+      work[positions[i]] ^= rsDiv(rsPolyEvalAsc(omega, xiInv), den);
+    }
+
+    // A genuine correction zeroes every syndrome; without this check a
+    // miscorrection past capacity would hand back confidently wrong bytes.
+    for (let j = 0; j < nsym; j++) {
+      let v = 0;
+      for (let i = 0; i < n; i++) v = rsMul(v, rsExp[j]) ^ work[i];
+      if (v !== 0) return null;
+    }
+    return work.subarray(0, n - nsym);
+  }
+
+  // majority returns the value at least two of three agree on. The frame length
+  // is sent three times because the receiver must know how many bytes to read
+  // before it can run the correction that would have fixed a corrupt length.
+  const majority = (a, b2, c) => (a === b2 || a === c ? a : b2 === c ? b2 : a);
+
+  const maxFrameLen = (parity) => (parity > 0 ? 255 - parity : 255);
 
   function crc16(bytes, length) {
     let crc = 0xffff;
@@ -166,9 +318,198 @@
     return out;
   }
 
+  // gray maps a quadrant index to two bits and back; it is its own inverse, so
+  // a phase error landing in an adjacent quadrant costs one bit, not two.
+  const GRAY = [0, 1, 3, 2];
+
+  // Correlator tables are the same for every symbol window, so build them once
+  // per band and sample rate rather than calling trig inside the inner loop.
+  const tableCache = new Map();
+  function carrierTables(band, sr) {
+    const key = `${band.name}@${sr}`;
+    let t = tableCache.get(key);
+    if (t) return t;
+    const symbolN = Math.floor(band.symbolSec * sr);
+    const cos = [];
+    const sin = [];
+    for (let k = 0; k < band.carriers; k++) {
+      const w = (2 * Math.PI * carrierFreq(band, k)) / sr;
+      const c = new Float64Array(symbolN);
+      const s2 = new Float64Array(symbolN);
+      for (let n = 0; n < symbolN; n++) {
+        c[n] = Math.cos(w * n);
+        s2[n] = Math.sin(w * n);
+      }
+      cos.push(c);
+      sin.push(s2);
+    }
+    t = { cos, sin, symbolN };
+    tableCache.set(key, t);
+    return t;
+  }
+
+  // carrierPhasors returns the complex amplitude of every subcarrier over one
+  // useful symbol window, skipping the cyclic prefix.
+  function carrierPhasors(samples, blockStart, prefixN, band, sr, out) {
+    const { cos, sin, symbolN } = carrierTables(band, sr);
+    const start = blockStart + prefixN;
+    const M = band.carriers;
+    if (!out) out = { re: new Float64Array(M), im: new Float64Array(M) };
+    if (start < 0 || start + symbolN > samples.length) {
+      out.re.fill(0);
+      out.im.fill(0);
+      return out;
+    }
+    for (let k = 0; k < M; k++) {
+      const c = cos[k];
+      const s2 = sin[k];
+      let re = 0;
+      let im = 0;
+      for (let n = 0; n < symbolN; n++) {
+        const v = samples[start + n];
+        re += v * c[n];
+        im += v * s2[n];
+      }
+      out.re[k] = re / symbolN;
+      out.im[k] = im / symbolN;
+    }
+    return out;
+  }
+
+  function readFrameParallel(samples, dataStart, band, sr) {
+    const prefixN = Math.floor(band.prefixSec * sr);
+    const blockN = Math.floor(blockSec(band) * sr);
+    const M = band.carriers;
+
+    // decodeAt reads count data symbols after the reference symbol, and reports
+    // how cleanly the differential phases landed in their quadrants.
+    const decodeAt = (off, count) => {
+      if (off < 0 || off + (count + 1) * blockN > samples.length) return null;
+      let prev = carrierPhasors(samples, off, prefixN, band, sr);
+      const bits = new Int8Array(count * bitsPerBlock(band));
+      let at = 0;
+      let margin = 0;
+      for (let blk = 1; blk <= count; blk++) {
+        const cur = carrierPhasors(samples, off + blk * blockN, prefixN, band, sr);
+        for (let k = 0; k < M; k++) {
+          // conj(cur) * prev recovers +delta-phi: correlating a sin() carrier
+          // against a cos/sin pair yields a phasor at (pi/2 - phi), so the
+          // other order would decode every quadrant backwards.
+          const re = cur.re[k] * prev.re[k] + cur.im[k] * prev.im[k];
+          const im = -cur.im[k] * prev.re[k] + cur.re[k] * prev.im[k];
+          const angle = Math.atan2(im, re);
+          const q = Math.round(angle / (Math.PI / 2)) & 3;
+          let err = Math.abs(angle - (q * Math.PI) / 2);
+          while (err > Math.PI) err = 2 * Math.PI - err;
+          margin += 1 - err / (Math.PI / 4);
+          const sym = GRAY[q];
+          bits[at++] = (sym >> 1) & 1;
+          bits[at++] = sym & 1;
+        }
+        prev = { re: cur.re.slice(), im: cur.im.slice() };
+      }
+      return { bits, margin: margin / (count * M) };
+    };
+
+    // Align on the phase-decision margin, not on received energy: energy hardly
+    // varies with alignment, so an energy metric settles half a symbol off
+    // where every bit is noise. The search spans the sync detector's own
+    // resolution plus the prefix, and no further — a wider sweep would invite
+    // locking onto the neighbouring symbol.
+    const search = prefixN + Math.floor(0.002 * sr);
+    const step = Math.max(1, Math.floor(prefixN / 4));
+    let bestOff = -1;
+    let bestMargin = -2;
+    for (let off = dataStart - search; off <= dataStart + search; off += step) {
+      const probe = decodeAt(off, 3);
+      if (probe && probe.margin > bestMargin) {
+        bestMargin = probe.margin;
+        bestOff = off;
+      }
+    }
+    if (bestOff < 0) return null;
+
+    const bitsToBytes = (bits, n) => {
+      const out = new Uint8Array(n);
+      for (let i = 0; i < n; i++) {
+        let by = 0;
+        for (let j = 0; j < 8; j++) by = (by << 1) | (bits[i * 8 + j] & 1);
+        out[i] = by;
+      }
+      return out;
+    };
+
+    const parity = band.parity || 0;
+    if (parity > 0) {
+      const h = decodeAt(bestOff, blocksForBytes(band, 3));
+      if (!h || h.bits.length < 24) return null;
+      const hb = bitsToBytes(h.bits, 3);
+      const frameLen = majority(hb[0], hb[1], hb[2]);
+      if (frameLen < 4 || frameLen > maxFrameLen(parity)) return null;
+      const airLen = 3 + frameLen + parity;
+      const all = decodeAt(bestOff, blocksForBytes(band, airLen));
+      if (!all || all.bits.length < airLen * 8) return null;
+      const air = bitsToBytes(all.bits, airLen);
+      const fixed = rsDecode(air.subarray(3, airLen), parity);
+      return fixed ? Uint8Array.from(fixed) : null;
+    }
+
+    const head = decodeAt(bestOff, blocksForBytes(band, 2));
+    if (!head || head.bits.length < 16) return null;
+    const total = bitsToBytes(head.bits, 2)[1] + 2;
+    if (total < 4 || total > 255) return null;
+    const all = decodeAt(bestOff, blocksForBytes(band, total));
+    if (!all || all.bits.length < total * 8) return null;
+    return bitsToBytes(all.bits, total);
+  }
+
+  // syncCandidates finds every position where a sync tone stands clear of the
+  // band's own noise floor. Shared by both modulations.
+  function syncCandidates(samples, sampleRate, band) {
+    const sr = sampleRate;
+    const syncN = Math.floor(band.syncSec * sr);
+    if (syncN <= 0 || samples.length < syncN) return { syncN, hop: 1, list: [] };
+    const hop = Math.max(1, Math.floor(0.002 * sr));
+    const positions = Math.floor((samples.length - syncN) / hop);
+    if (positions < 0) return { syncN, hop, list: [] };
+    const mags = syncTrack(samples, syncN, hop, positions, syncFreq(band), sr);
+    let peak = 0;
+    for (let i = 0; i <= positions; i++) if (mags[i] > peak) peak = mags[i];
+    if (peak <= 0) return { syncN, hop, list: [] };
+    const median = medianOf(mags);
+    if (median > 0 && peak < MIN_SYNC_RATIO * median) return { syncN, hop, list: [] };
+
+    const threshold = 0.3 * peak;
+    const guard = Math.max(1, Math.floor(syncN / hop));
+    const list = [];
+    for (let i = 0; i <= positions; i++) {
+      if (mags[i] < threshold) continue;
+      let isPeak = true;
+      for (let j = i - guard; j <= i + guard; j++) {
+        if (j >= 0 && j <= positions && mags[j] > mags[i]) {
+          isPeak = false;
+          break;
+        }
+      }
+      if (isPeak && (list.length === 0 || i - list[list.length - 1] > guard)) list.push(i);
+    }
+    return { syncN, hop, list };
+  }
+
+  function demodulateParallel(samples, sampleRate, band) {
+    const { syncN, hop, list } = syncCandidates(samples, sampleRate, band);
+    const frames = [];
+    for (const c of list) {
+      const f = readFrameParallel(samples, c * hop + syncN, band, sampleRate);
+      if (f) frames.push({ offset: c * hop, bytes: f });
+    }
+    return frames;
+  }
+
   // demodulate locates every block from its own sync tone and returns the
   // frames whose CRC verifies.
   function demodulate(samples, sampleRate, band) {
+    if (isParallel(band)) return demodulateParallel(samples, sampleRate, band);
     const sr = sampleRate;
     const syncN = Math.floor(band.syncSec * sr);
     const symN = Math.floor(band.symbolSec * sr);
@@ -283,7 +624,12 @@
   // least this much history, or a frame that straddles two scans is never seen
   // whole by either of them.
   function maxFrameSamples(band, sampleRate, maxFrameBytes) {
-    return Math.ceil(band.syncSec * sampleRate) + maxFrameBytes * 2 * Math.ceil(band.symbolSec * sampleRate);
+    const sync = Math.ceil(band.syncSec * sampleRate);
+    if (isParallel(band)) {
+      // One reference symbol plus the data symbols the frame occupies.
+      return sync + (1 + blocksForBytes(band, maxFrameBytes)) * Math.ceil(blockSec(band) * sampleRate);
+    }
+    return sync + maxFrameBytes * 2 * Math.ceil(band.symbolSec * sampleRate);
   }
 
   // LiveReceiver decodes continuously from a microphone instead of from a
@@ -395,7 +741,7 @@
     }
   }
 
-  const api = { TONES, Bands, BandNames, toneFreq, syncFreq, bandFits, crc16, goertzel, demodulate, parseFrame, decode, LiveReceiver, maxFrameSamples };
+  const api = { TONES, Bands, BandNames, toneFreq, syncFreq, bandFits, crc16, goertzel, demodulate, parseFrame, decode, LiveReceiver, maxFrameSamples, rsDecode, isParallel, carrierFreq, blockSec, bitsPerBlock };
   global.AirQRAudio = api;
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

@@ -106,6 +106,9 @@ type Demodulated struct {
 // read. Each block is located independently from its own sync tone, so a
 // corrupt or missing block never shifts the ones after it.
 func Demodulate(samples []float32, sampleRate int, b Band) []Demodulated {
+	if b.Parallel() {
+		return demodulateParallel(samples, sampleRate, b)
+	}
 	sr := float64(sampleRate)
 	syncN := int(b.SyncSec * sr)
 	symN := int(b.SymbolSec * sr)
@@ -233,6 +236,29 @@ func readFrame(samples []float32, dataStart, symN int, b Band, sr float64) (Demo
 			bytesOut = append(bytesOut, byte(hi<<4|lo))
 		}
 		return bytesOut, total / float64(2*count), true
+	}
+
+	if b.Parity > 0 {
+		// Three copies of the length come first; majority-vote them, then read
+		// the frame and its parity and let Reed-Solomon repair what the channel
+		// damaged.
+		head, _, ok := read(3)
+		if !ok {
+			return Demodulated{}, false
+		}
+		frameLen := int(majority(head[0], head[1], head[2]))
+		if frameLen < 4 || frameLen > maxFrameLen(b.Parity) {
+			return Demodulated{}, false
+		}
+		air, quality, ok := read(3 + frameLen + b.Parity)
+		if !ok {
+			return Demodulated{}, false
+		}
+		frame, _, ok := RSDecode(air[3:], b.Parity)
+		if !ok {
+			return Demodulated{}, false
+		}
+		return Demodulated{Bytes: frame, Quality: quality}, true
 	}
 
 	// Two bytes give the type and the length, so the rest of the frame can be

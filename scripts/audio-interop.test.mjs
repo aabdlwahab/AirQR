@@ -119,7 +119,7 @@ try {
   // The live path is what the page actually uses at a microphone: audio arrives
   // in small chunks and the transfer has to complete while it streams, without
   // the receiver ever holding the whole session in memory.
-  for (const band of ["fast", "ultrasonic"]) {
+  for (const band of ["fast", "ultrasonic", "ultrasonic-fast", "ultrasonic-wide"]) {
     const wav = join(dir, `${band}.wav`);
     const { samples, sampleRate } = readWav(readFileSync(wav));
     const rx = new audio.LiveReceiver(sampleRate, { scanSeconds: 0.4 });
