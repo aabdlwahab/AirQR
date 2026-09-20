@@ -184,6 +184,13 @@ video {
   pointer-events: none;
 }
 
+.aim-hint a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid var(--accent-dim);
+  pointer-events: auto; /* the hint itself is click-through; this link is not */
+}
+
 .signal:not([data-phase="idle"]) .aim-hint {
   display: none;
 }
@@ -276,6 +283,13 @@ video {
   -webkit-backdrop-filter: blur(8px);
 }
 
+/* The acoustic-receiver entry point is a link, not a button, so it needs the
+   text-decoration and colour reset the button got for free. */
+a.icon-btn {
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+}
 .icon-btn--sm {
   width: 30px;
   height: 30px;

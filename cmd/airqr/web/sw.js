@@ -3,7 +3,7 @@
 // CACHE is bumped when the cached assets change, which forces a full refetch on
 // install. The fetch handler below also revalidates in the background, so a
 // forgotten bump can no longer strand a client on a stale build.
-const CACHE = "airqr-v10";
+const CACHE = "airqr-v11";
 const ASSETS = [
   "./",
   "./index.html",

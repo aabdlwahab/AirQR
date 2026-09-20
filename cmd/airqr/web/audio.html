@@ -341,21 +341,21 @@
         </div>
       </section>
 
-      <section class="panel" id="spectrumPanel" hidden>
+      <section class="panel" id="spectrumPanel">
         <h2>Band map</h2>
         <svg class="spectrum" id="spectrum" viewBox="0 0 700 120" role="img" aria-label="Where each AirQR band sits relative to this recording's Nyquist limit"></svg>
         <div class="legend">
-          <span><i style="background:#16c47f"></i>carries this recording</span>
+          <span><i style="background:#16c47f"></i>fits under the sample rate</span>
           <span><i style="background:rgba(225,235,231,0.18)"></i>above Nyquist, cannot be present</span>
         </div>
       </section>
 
-      <section class="panel" id="bandsPanel" hidden>
+      <section class="panel" id="bandsPanel">
         <h2>Demodulation</h2>
         <div style="overflow-x:auto">
           <table>
             <thead>
-              <tr><th>Band</th><th>Spectrum</th><th>Mode</th><th>Status</th><th>Beacons</th><th>Frames</th></tr>
+              <tr><th>Band</th><th>Spectrum</th><th>Mode</th><th>B/s</th><th>Status</th><th>Beacons</th><th>Frames</th></tr>
             </thead>
             <tbody id="bandRows"></tbody>
           </table>
@@ -405,9 +405,13 @@
 
         function reset() {
           logEl.textContent = "";
-          for (const id of ["spectrumPanel", "bandsPanel", "rankPanel", "outPanel", "logPanel"]) {
+          for (const id of ["rankPanel", "outPanel", "logPanel"]) {
             $(id).hidden = true;
           }
+          // The band map and band list stay up. They describe what the sender
+          // can transmit, which is worth seeing before a decode rather than
+          // only after one.
+          showBands();
         }
 
         // ── Reading audio ──────────────────────────────────────
@@ -457,9 +461,11 @@
 
         // ── Band map ───────────────────────────────────────────
         let spectrumRate = 0;
+        let spectrumAssumed = true;
 
-        function drawSpectrum(sampleRate) {
+        function drawSpectrum(sampleRate, assumed) {
           spectrumRate = sampleRate;
+          spectrumAssumed = Boolean(assumed);
           const panel = $("spectrumPanel");
           panel.hidden = false; // unhide first: a hidden element measures zero
 
@@ -525,7 +531,10 @@
           const nx = x(nyquist);
           if (nx <= PR) {
             parts.push(`<line x1="${nx.toFixed(1)}" y1="6" x2="${nx.toFixed(1)}" y2="${axisY}" stroke="#e0a83c" stroke-width="1.5" stroke-dasharray="4 3" fill="none"/>`);
-            const text = narrow ? `${(nyquist / 1000).toFixed(1)}k` : `Nyquist ${(nyquist / 1000).toFixed(1)} kHz`;
+            const suffix = spectrumAssumed ? " (assumed)" : "";
+            const text = narrow
+              ? `${(nyquist / 1000).toFixed(1)}k`
+              : `Nyquist ${(nyquist / 1000).toFixed(1)} kHz${suffix}`;
             const anchor = nx > PR - (narrow ? 34 : 118) ? "end" : "start";
             const tx = nx + (anchor === "end" ? -5 : 5);
             parts.push(`<text x="${tx.toFixed(1)}" y="13" fill="#e0a83c" font-family="${mono}" font-size="${fs}" text-anchor="${anchor}">${text}</text>`);
@@ -538,7 +547,7 @@
         window.addEventListener("resize", () => {
           if (!spectrumRate) return;
           clearTimeout(redrawTimer);
-          redrawTimer = setTimeout(() => drawSpectrum(spectrumRate), 120);
+          redrawTimer = setTimeout(() => drawSpectrum(spectrumRate, spectrumAssumed), 120);
         });
 
         // ── Assembly ───────────────────────────────────────────
@@ -555,6 +564,29 @@
           return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
         }
 
+        // channelRate is the raw bits the modulation puts on the wire, before
+        // framing, parity and gzip. Useful for ranking the bands against one
+        // another; the payload rate you actually observe differs.
+        function channelRate(b) {
+          if (AirQRAudio.isParallel(b)) {
+            return AirQRAudio.bitsPerBlock(b) / AirQRAudio.blockSec(b) / 8;
+          }
+          return 4 / b.symbolSec / 8;
+        }
+
+        // showBands lists every band with nothing decoded yet.
+        function showBands(sampleRate) {
+          renderBands(
+            AirQRAudio.BandNames.map((name) => ({
+              band: name,
+              fits: sampleRate ? AirQRAudio.bandFits(AirQRAudio.Bands[name], sampleRate) : true,
+              beacons: null,
+              data: null,
+            })),
+            null,
+          );
+        }
+
         function renderBands(tried, winner) {
           const rows = $("bandRows");
           rows.textContent = "";
@@ -564,9 +596,12 @@
             if (winner && t.band === winner) tr.className = "win";
             const status = !t.fits
               ? '<span class="chip warn">above nyquist</span>'
-              : t.beacons + t.data > 0
-                ? '<span class="chip ok">signal</span>'
-                : '<span class="chip no">silent</span>';
+              : t.beacons === null
+                ? '<span class="chip no">—</span>'
+                : t.beacons + t.data > 0
+                  ? '<span class="chip ok">signal</span>'
+                  : '<span class="chip no">silent</span>';
+            const count = (v) => (v === null ? "—" : v);
             // A parallel band's top carrier is set by its subcarrier count,
             // not by the 16-tone serial alphabet.
             const top = AirQRAudio.isParallel(b)
@@ -579,7 +614,8 @@
               `<td>${t.band}</td>` +
               `<td>${(AirQRAudio.toneFreq(b, 0) / 1000).toFixed(2)}–${(top / 1000).toFixed(2)} kHz</td>` +
               `<td>${mode}</td>` +
-              `<td>${status}</td><td>${t.beacons}</td><td>${t.data}</td>`;
+              `<td>${channelRate(b).toFixed(0)}</td>` +
+              `<td>${status}</td><td>${count(t.beacons)}</td><td>${count(t.data)}</td>`;
             rows.appendChild(tr);
           }
           $("bandsPanel").hidden = false;
@@ -608,7 +644,7 @@
           if (!exact) {
             log("Browser-decoded, so the file was resampled to the audio context rate. A WAV is read exactly.", "warn");
           }
-          drawSpectrum(sampleRate);
+          drawSpectrum(sampleRate, false);
 
           if (!AirQRAudio.bandFits(AirQRAudio.Bands.ultrasonic, sampleRate)) {
             log(`At ${sampleRate} Hz nothing above ${(sampleRate / 2000).toFixed(1)} kHz can be present — the ultrasonic band is gone, not weak.`, "warn");
@@ -784,7 +820,7 @@
 
           const started = Date.now();
           log(`Listening at ${rate} Hz.`);
-          drawSpectrum(rate);
+          drawSpectrum(rate, false);
           if (!AirQRAudio.bandFits(AirQRAudio.Bands.ultrasonic, rate)) {
             log(`This input runs at ${rate} Hz, so nothing above ${(rate / 2000).toFixed(1)} kHz can reach the decoder.`, "warn");
           }
@@ -845,6 +881,12 @@
           $("listen").disabled = true;
           $("recHint").textContent = "Microphone capture needs HTTPS or localhost";
         }
+
+        // Open showing what the receiver can decode. 48 kHz is the common case
+        // and is replaced by the real rate the moment a file or microphone
+        // supplies one.
+        showBands();
+        drawSpectrum(48000, true);
       })();
     </script>
   </body>
