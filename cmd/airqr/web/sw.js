@@ -3,7 +3,7 @@
 // CACHE is bumped when the cached assets change, which forces a full refetch on
 // install. The fetch handler below also revalidates in the background, so a
 // forgotten bump can no longer strand a client on a stale build.
-const CACHE = "airqr-v14";
+const CACHE = "airqr-v15";
 const ASSETS = [
   "./",
   "./index.html",
@@ -22,7 +22,12 @@ const ASSETS = [
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()),
+    // cache: "reload" is what actually makes the version bump mean something.
+    // A plain addAll fetches through the browser's HTTP cache, so a bumped
+    // CACHE could be filled with the very stale copies it was bumped to evict.
+    caches.open(CACHE)
+      .then((cache) => cache.addAll(ASSETS.map((url) => new Request(url, { cache: "reload" }))))
+      .then(() => self.skipWaiting()),
   );
 });
 
