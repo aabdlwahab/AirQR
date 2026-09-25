@@ -333,6 +333,7 @@
         <input type="file" id="file" accept="audio/*,.wav,.caf,.m4a,.mp3" hidden>
         <div class="row">
           <button type="button" class="btn rec" id="listen">Listen</button>
+          <select class="sel" id="mic" aria-label="Capture device"><option value="">Default input</option></select>
           <span class="hint" id="recHint">AGC, noise suppression and echo cancellation are disabled</span>
         </div>
         <div class="live" id="live" hidden>
@@ -387,8 +388,8 @@
         differential QPSK on parallel subcarriers, Reed-Solomon, AIRQR2 fountain coding
       </footer>
     </div>
-    <script src="fountain.js"></script>
-    <script src="audio.js"></script>
+    <script src="fountain.js?v=15"></script>
+    <script src="audio.js?v=15"></script>
     <script>
       "use strict";
       (function () {
@@ -794,14 +795,19 @@
             // Each of these defaults to on and each is tuned for speech: the
             // gain rides, the suppressor treats a steady tone as noise, and the
             // canceller subtracts the very signal being decoded.
-            stream = await navigator.mediaDevices.getUserMedia({
-              audio: {
-                echoCancellation: false,
-                noiseSuppression: false,
-                autoGainControl: false,
-                channelCount: 1,
-              },
-            });
+            const audio = {
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+              channelCount: 1,
+            };
+            // Pinning the device matters more than it looks: a virtual audio
+            // device (loopback, per-app volume, conferencing) can hold the
+            // system default at 8 kHz, and the default is what getUserMedia
+            // hands back when nothing is named.
+            const chosen = $("mic").value;
+            if (chosen) audio.deviceId = { exact: chosen };
+            stream = await navigator.mediaDevices.getUserMedia({ audio });
           } catch (err) {
             reset();
             log(`Microphone unavailable: ${err.message || err}`, "bad");
@@ -818,11 +824,25 @@
           let used = 0;
           let finished = false;
 
+          // The context resamples whatever the device gives it, so ctx.sampleRate
+          // is the OUTPUT rate and says nothing about what the capture device
+          // preserved. An 8 kHz device upsampled to 48 kHz reads as 48 kHz here
+          // while everything above 4 kHz is already gone, which silently
+          // defeats the band check below. Drive that check off the track.
+          const track = stream.getAudioTracks()[0];
+          const settings = track && track.getSettings ? track.getSettings() : {};
+          const deviceRate = settings.sampleRate || rate;
+          if (track && track.label) populateMics();
+
           const started = Date.now();
-          log(`Listening at ${rate} Hz.`);
-          drawSpectrum(rate, false);
-          if (!AirQRAudio.bandFits(AirQRAudio.Bands.ultrasonic, rate)) {
-            log(`This input runs at ${rate} Hz, so nothing above ${(rate / 2000).toFixed(1)} kHz can reach the decoder.`, "warn");
+          log(`Listening at ${rate} Hz${track && track.label ? ` on ${track.label}` : ""}.`);
+          drawSpectrum(deviceRate, false);
+          if (deviceRate < rate) {
+            log(`The capture device runs at ${deviceRate} Hz, so nothing above ${(deviceRate / 2000).toFixed(1)} kHz survives before the decoder ever sees it — the context resamples it up to ${rate} Hz, which hides the loss. Pick the real microphone above, or change the system input device.`, "bad");
+          }
+          const dead = AirQRAudio.BandNames.filter((n) => !AirQRAudio.bandFits(AirQRAudio.Bands[n], deviceRate));
+          if (dead.length) {
+            log(`At ${deviceRate} Hz these bands cannot be present: ${dead.join(", ")}.`, "warn");
           }
           $("live").hidden = false;
           $("listen").textContent = "Stop";
@@ -877,9 +897,37 @@
           else startLive();
         });
 
+        // Device labels stay blank until capture has been permitted once, so
+        // this runs again after the first successful stream.
+        async function populateMics() {
+          if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+          let devices;
+          try { devices = await navigator.mediaDevices.enumerateDevices(); } catch { return; }
+          const sel = $("mic");
+          const keep = sel.value;
+          sel.textContent = "";
+          const def = document.createElement("option");
+          def.value = "";
+          def.textContent = "Default input";
+          sel.appendChild(def);
+          let n = 0;
+          for (const d of devices) {
+            if (d.kind !== "audioinput") continue;
+            n += 1;
+            const opt = document.createElement("option");
+            opt.value = d.deviceId;
+            opt.textContent = d.label || `Input ${n}`;
+            sel.appendChild(opt);
+          }
+          sel.value = keep;
+        }
+
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
           $("listen").disabled = true;
+          $("mic").disabled = true;
           $("recHint").textContent = "Microphone capture needs HTTPS or localhost";
+        } else {
+          populateMics();
         }
 
         // Open showing what the receiver can decode. 48 kHz is the common case
